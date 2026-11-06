@@ -1,0 +1,29 @@
+{
+  "name": "thickshake",
+  "productName": "ThickShake",
+  "version": "1.0.0",
+  "description": "A fast low-poly modeler, rigger and animator for game makers.",
+  "main": "electron/main.cjs",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "start": "vite build && electron .",
+    "test": "vitest run",
+    "e2e": "vite build && electron scripts/e2e.cjs",
+    "icon": "node scripts/make-icon.mjs",
+    "dist": "npm run build && node scripts/package.mjs"
+  },
+  "dependencies": {
+    "three": "0.170.0"
+  },
+  "devDependencies": {
+    "@electron/packager": "^18.3.6",
+    "@types/three": "0.170.0",
+    "electron": "^33.2.1",
+    "gltf-validator": "^2.0.0-dev.3.10",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11",
+    "vitest": "^2.1.8"
+  }
+}
