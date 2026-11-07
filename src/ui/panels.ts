@@ -17,6 +17,7 @@ import { paintWeight, weightIssues } from '../core/skeleton';
 import { commands, runCommand, TOOLS } from './commands';
 import { button, checkbox, h, ICONS, numField, renderInto, section, select, svgIcon } from './dom';
 import { toast } from './feedback';
+import { constraintsSection } from './constraintPanel';
 
 let budgetId = 'indie';
 export const panelState = { tab: 'scene' };
@@ -1065,7 +1066,7 @@ function rigPanel() {
           ed.emit('selection', 'skeleton');
         },
       },
-        h('span', { class: 'bone-dot' }),
+        h('span', { class: `bone-dot${b.control ? ' control' : ''}`, title: b.control ? 'A control: moves no vertices, left out of exports' : undefined }),
         renamable(b.name, (v) => ed.transact('Rename joint', (d) => { d.bones.find((x) => x.id === b.id)!.name = uniqueName(d.bones.filter((x) => x.id !== b.id).map((x) => x.name), v); })),
         h('span', { class: 'row-meta', title: 'Vertices influenced' }, weighted.toLocaleString()),
       ));
@@ -1104,6 +1105,7 @@ function rigPanel() {
       active && !ed.poseActive ? h('div', { class: 'xyz' }, jointAxis(0), jointAxis(1), jointAxis(2)) : null,
       m.bones.length ? checkbox('Moving a joint moves its branch', ed.moveJointChildren, (v) => { ed.moveJointChildren = v; }) : null,
     ),
+    constraintsSection(),
     section('Skinning',
       h('div', { class: 'btn-row' },
         cmd('rig.autoWeightsAll', 'Auto-weight all', commands.get('rig.autoWeights')?.hint),

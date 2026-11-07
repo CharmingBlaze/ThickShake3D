@@ -6,6 +6,7 @@ import { exportMS3D } from '../io/ms3d';
 import { saveFile } from '../io/platform';
 import { exportOBJ, exportPLY, exportSTL } from '../io/simple';
 import { commands } from './commands';
+import { prepareRigForExport } from '../core/constraints';
 import { cloneModel, type Model } from '../core/types';
 import { button, checkbox, h, numField, select } from './dom';
 import { modal, reportError, toast } from './feedback';
@@ -165,7 +166,7 @@ export async function doExport(format: Format, o: ExportOptions) {
     }
     case 'stl': res = await saveFile({ defaultName: `${stem}.stl`, filters: filter('STL', 'stl'), data: exportSTL(m, o) }); break;
     case 'ply': res = await saveFile({ defaultName: `${stem}.ply`, filters: filter('PLY', 'ply'), data: exportPLY(m, o) }); break;
-    case 'ms3d': res = await saveFile({ defaultName: `${stem}.ms3d`, filters: filter('MS3D', 'ms3d'), data: exportMS3D(m, o.scale) }); break;
+    case 'ms3d': res = await saveFile({ defaultName: `${stem}.ms3d`, filters: filter('MS3D', 'ms3d'), data: exportMS3D(prepareRigForExport(m), o.scale) }); break;
   }
   if (res) toast(`Exported ${res.name}`, 'ok');
 }

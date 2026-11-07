@@ -3,6 +3,7 @@
 // is simply: p' = R * (p - head) + t.
 import { dist, sub, dot, add, mul } from './geom';
 import { uniqueName, type Bone, type Clip, type Key, type Model, type Q, type Track, type V3 } from './types';
+import { applyConstraints, sampleLocals } from './constraints';
 
 export const qIdent: Q = [0, 0, 0, 1];
 export function qMul(a: Q, b: Q): Q {
@@ -110,11 +111,22 @@ export function sampleTrack(t: Track | undefined, f: number): { pos: V3; rot: Q 
 
 export interface BonePose { rot: Q; pos: V3; head: V3 }
 
-export function evalPose(m: Model, clip: Clip | null, frame: number): Map<number, BonePose> {
+/**
+ * Every joint's pose at a frame of a clip: its keys, then the model's constraints, then its parents. With
+ * `constraints` false, just the keys, as the clip has them.
+ */
+export function evalPose(m: Model, clip: Clip | null, frame: number, constraints = true): Map<number, BonePose> {
+  const locals = sampleLocals(m, clip, frame);
+  if (constraints && m.constraints?.length) applyConstraints(m, clip, frame, locals);
+  return forwardPose(m, locals);
+}
+
+/** World poses from each joint's local offset and rotation, parents first. */
+export function forwardPose(m: Model, locals: Map<number, { pos: V3; rot: Q }>): Map<number, BonePose> {
   const out = new Map<number, BonePose>();
   const byId = new Map(m.bones.map((b) => [b.id, b]));
   for (const b of bonesTopo(m)) {
-    const { pos, rot } = clip ? sampleTrack(clip.tracks[b.id], frame) : { pos: [0, 0, 0] as V3, rot: qIdent };
+    const { pos, rot } = locals.get(b.id) ?? { pos: [0, 0, 0] as V3, rot: qIdent };
     const parent = b.parent !== null ? out.get(b.parent) : undefined;
     const parentHead: V3 = b.parent !== null ? byId.get(b.parent)?.head ?? [0, 0, 0] : [0, 0, 0];
     const off = add(sub(b.head, parentHead), pos);
@@ -160,6 +172,8 @@ export function autoWeights(m: Model, verts: Iterable<number>, maxInfluences = 4
   if (!m.bones.length) return;
   const segs: { bone: number; a: V3; b: V3 }[] = [];
   for (const b of m.bones) {
+    // Controls such as IK targets move no vertices.
+    if (b.control) continue;
     const kids = m.bones.filter((c) => c.parent === b.id);
     if (kids.length) kids.forEach((c) => segs.push({ bone: b.id, a: b.head, b: c.head }));
     else segs.push({ bone: b.id, a: b.head, b: b.head });
@@ -200,6 +214,8 @@ export function heatWeights(m: Model, verts: Iterable<number>, maxInfluences = 4
   if (!m.bones.length) return;
   const segs: { bone: number; a: V3; b: V3 }[] = [];
   for (const b of m.bones) {
+    // Controls such as IK targets move no vertices.
+    if (b.control) continue;
     const kids = m.bones.filter((c) => c.parent === b.id);
     if (kids.length) kids.forEach((c) => segs.push({ bone: b.id, a: b.head, b: c.head }));
     else segs.push({ bone: b.id, a: b.head, b: b.head });

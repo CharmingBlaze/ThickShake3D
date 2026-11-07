@@ -1,6 +1,7 @@
 // glTF 2.0 / GLB writer. Exports PBR materials, embedded textures, skins and animation clips.
 import { flattenTrack } from '../core/anim';
 import { faceNormalRaw, triangulateFace } from '../core/geom';
+import { prepareRigForExport } from '../core/constraints';
 import { bonesTopo } from '../core/skeleton';
 import type { Face, Group, Model, Texture, V3 } from '../core/types';
 
@@ -186,6 +187,8 @@ function hexToLinear(hex: string): [number, number, number] {
 }
 
 export function buildGltf(m: Model, o: ExportOptions): { json: any; bin: Uint8Array } {
+  // Engines read keys: constraints are baked into them, and posing controls such as IK targets are left out.
+  m = prepareRigForExport(m);
   const b = new BinBuilder();
   const json: any = {
     asset: { version: '2.0', generator: 'ThickShake 1.0' },
@@ -368,7 +371,9 @@ export function buildGltf(m: Model, o: ExportOptions): { json: any; bin: Uint8Ar
           addChannel(node, 'rotation', track.rot.map((k) => k.f), vals, 'VEC4');
         }
       }
-      if (channels.length) anims.push({ name: clip.name, samplers, channels });
+      // Events have no place in glTF itself; they go in extras, where Godot and most loaders keep them as metadata.
+      const events = clip.events?.length ? { extras: { events: [...clip.events].sort((x, y) => x.f - y.f).map((e) => ({ name: e.name, time: +(e.f / clip.fps).toFixed(6), frame: e.f })) } } : {};
+      if (channels.length) anims.push({ name: clip.name, samplers, channels, ...events });
     }
     if (anims.length) json.animations = anims;
   }

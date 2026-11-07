@@ -15,13 +15,14 @@ import { splitOutline } from '../src/core/limbs';
 import { blendPixel, brushFootprint, clearRegion, clipRect, copyRegion, flipRegion, floodFill, getPixel, keepInside, linePixels, mapToPalette, pasteRegion, rectPixels, reducePalette, remapPixels, replaceColor, seamTwins, strokeLine, usedColors, uvAtPoint, worldPerTexel, type Brush, type Pixels, type RGBA } from '../src/core/paint';
 import { autotileSlot, autotileTemplate, BLOB_MASKS, boxQuads, cellAt, cellCorners, cellsOnPlane, cubeBox, fitTileToFace, placeTileQuad, quadTileCounts, splitQuad, tileAtPixel, tileCounts, tileForCell, tileOfFace, tilePixels, tileUV, type TileBlock, type TileGrid, type TilePlane } from '../src/core/tiles';
 import { addLimb, addStarter, deformPiece, fusePieces, limbFrame, radialPieces, reducePiece, twinOf, alignPieces, arrayPieces, colorsToMaterials, dropPieces, mirrorPiece, pieceBounds, scaleFigure, snapPieces } from '../src/core/blockout';
-import { bounds, cross, dist, dot, sub } from '../src/core/geom';
+import { bounds, cross, dist, dot, norm, sub } from '../src/core/geom';
 import { applyPreset, bakeModelGradient, bakeTextureGradient, blankOrm, evenStops, flipGreen, gradientDirection, guessMapKind, harmonies, hexToHsv, hexToRgb, hsvToHex, MATERIAL_PRESETS, normalFromHeight, packChannel, paletteFromImage, parseHex, parsePaletteText, reverseStops, sampleGradient } from '../src/core/materials';
 import { sampleTrack } from '../src/core/skeleton';
 import { addHumanoid, autoWeights, evalPose, heatWeights, mirrorJoints, mirrorName, mirrorWeights, paintWeight, pruneWeights, qAxisAngle, qFromEuler, qRotate, qToEuler, removeJoints, skinInto, smoothWeights, splitJoint, weightIssues } from '../src/core/skeleton';
-import { cloneModel, emptyModel, makeGroup, makeMaterial, type Gradient, type Clip, type Model, type Q, type V2, type V3 } from '../src/core/types';
+import { cloneModel, emptyModel, makeGroup, makeMaterial, type Gradient, type Clip, type Constraint, type Model, type Q, type V2, type V3 } from '../src/core/types';
 import { alignIslands, averageIslandScale, projectScreen, liveUnwrap, minimizeStretch, setPins, clearSeams, fitUV, packIslands, projectBox, relaxUV, seamEdges, seamsFromIslands, setSeams, setTexelDensity, smartUnwrap, stitchIslands, texelDensity, unwrap, uvIslands, uvOverlaps, uvStretch } from '../src/core/uv';
-import { buildExportMesh, computeTangents, exportGLB } from '../src/io/gltf';
+import { buildExportMesh, buildGltf, computeTangents, exportGLB } from '../src/io/gltf';
+import { applyConstraints, bakeIKToFK, constraintWeight, keyWeight, prepareRigForExport, sampleLocals, snapTargetToFK } from '../src/core/constraints';
 import { bakeAO, bakeNormals, buildBvh, dilate, raycast, runToEnd, sampleSurface, type BakeMesh } from '../src/core/bake';
 import { packRects, remapIntoAtlas, type PackedRect } from '../src/core/atlas';
 import { exportMS3D, importMS3D } from '../src/io/ms3d';
@@ -2471,5 +2472,104 @@ describe('baking and atlases', () => {
     expect(clamped).toBe(false);
     expect(uv[2]).toEqual([0.5, 0.5]);
     expect(remapIntoAtlas([[0, 0], [3, 0], [3, 1]], { x: 0, y: 0, w: 64, h: 64 }, 128, 128).clamped).toBe(true);
+  });
+});
+
+describe('joint constraints', () => {
+  // An arm along +X: shoulder, elbow, hand, plus a free IK target and a pole, both controls.
+  const arm = () => {
+    const m = emptyModel();
+    m.bones.push(
+      { id: 1, name: 'Shoulder', parent: null, head: [0, 1, 0] },
+      { id: 2, name: 'Elbow', parent: 1, head: [1, 1, 0] },
+      { id: 3, name: 'Hand', parent: 2, head: [2, 1, 0] },
+      { id: 4, name: 'Hand IK', parent: null, head: [2, 1, 0], control: true },
+      { id: 5, name: 'Elbow pole', parent: null, head: [1, 1, -1], control: true },
+    );
+    const clip: Clip = { id: 9, name: 'Reach', fps: 24, length: 10, loop: false, tracks: {} };
+    m.clips.push(clip);
+    m.nextId = 20;
+    return { m, clip };
+  };
+  const ik = (extra: Partial<Extract<Constraint, { kind: 'ik' }>> = {}): Constraint => ({ id: 10, kind: 'ik', bone: 3, chain: 2, target: 4, pole: 5, align: false, weight: 1, ...extra });
+  const moveTarget = (clip: Clip, to: V3, f = 0) => { clip.tracks[4] = { pos: [{ f, v: [to[0] - 2, to[1] - 1, to[2]] }], rot: [] }; };
+
+  it('bends a chain to reach its target, toward the pole', () => {
+    const { m, clip } = arm();
+    m.constraints = [ik()];
+    moveTarget(clip, [1.2, 0.2, 0]);
+    const pose = evalPose(m, clip, 0);
+    expect(dist(pose.get(3)!.pos, [1.2, 0.2, 0])).toBeLessThan(1e-3);
+    // The pole is behind (-Z), so the elbow bends that way.
+    expect(pose.get(2)!.pos[2]).toBeLessThan(-0.1);
+    // Without constraints, the keys alone leave the arm straight.
+    expect(dist(evalPose(m, clip, 0, false).get(3)!.pos, [2, 1, 0])).toBeLessThan(1e-9);
+  });
+
+  it('blends IK with the keyed pose by a weight that can be keyed', () => {
+    const { m, clip } = arm();
+    m.constraints = [ik()];
+    moveTarget(clip, [1.2, 0.2, 0]);
+    keyWeight(clip, 10, 0, 0);
+    keyWeight(clip, 10, 10, 1);
+    expect(constraintWeight(m.constraints[0], clip, 5)).toBeCloseTo(0.5, 6);
+    // Fully keyed (FK) at the start: the hand stays where its keys put it.
+    expect(dist(evalPose(m, clip, 0).get(3)!.pos, [2, 1, 0])).toBeLessThan(1e-6);
+    const half = evalPose(m, clip, 5).get(3)!.pos;
+    expect(dist(half, [2, 1, 0])).toBeGreaterThan(0.1);
+    expect(dist(half, [1.2, 0.2, 0])).toBeGreaterThan(0.1);
+  });
+
+  it('switches between IK and FK without a jump', () => {
+    const { m, clip } = arm();
+    m.constraints = [ik({ weight: 0 })];
+    // Some keyed bend.
+    clip.tracks[1] = { pos: [], rot: [{ f: 0, v: qAxisAngle([0, 0, 1], -0.4) }] };
+    clip.tracks[2] = { pos: [], rot: [{ f: 0, v: qAxisAngle([0, 0, 1], -0.6) }] };
+    const fk = evalPose(m, clip, 0).get(3)!.pos;
+    snapTargetToFK(m, clip, 0, m.constraints[0] as Extract<Constraint, { kind: 'ik' }>);
+    (m.constraints[0] as { weight: number }).weight = 1;
+    expect(dist(evalPose(m, clip, 0).get(3)!.pos, fk)).toBeLessThan(1e-3);
+    // And back: bake the IK pose into keys, then turn IK off.
+    moveTarget(clip, [1.3, 0.1, 0.2]);
+    const solved = evalPose(m, clip, 0).get(3)!.pos;
+    bakeIKToFK(m, clip, 0, m.constraints[0] as Extract<Constraint, { kind: 'ik' }>);
+    (m.constraints[0] as { weight: number }).weight = 0;
+    expect(dist(evalPose(m, clip, 0).get(3)!.pos, solved)).toBeLessThan(1e-6);
+  });
+
+  it('limits rotation, points at things and copies rotation', () => {
+    const { m, clip } = arm();
+    clip.tracks[2] = { pos: [], rot: [{ f: 0, v: qFromEuler(0, 0, 90) }] };
+    m.constraints = [{ id: 11, kind: 'limit', bone: 2, min: [-180, -180, -30], max: [180, 180, 30], weight: 1 }];
+    expect(qToEuler(evalPose(m, clip, 0).get(2)!.rot)[2]).toBeCloseTo(30, 3);
+    // The shoulder points at the target, wherever it goes.
+    moveTarget(clip, [0, 3, 0]);
+    m.constraints = [{ id: 12, kind: 'lookAt', bone: 1, target: 4, weight: 1 }];
+    const pose = evalPose(m, clip, 0);
+    const aim = norm(sub(pose.get(2)!.pos, pose.get(1)!.pos));
+    expect(dot(aim, [0, 1, 0])).toBeCloseTo(1, 4);
+    m.constraints = [{ id: 13, kind: 'copyRot', bone: 3, target: 2, weight: 1 }];
+    const local = sampleLocals(m, clip, 0);
+    applyConstraints(m, clip, 0, local);
+    expect(qToEuler(local.get(3)!.rot)[2]).toBeCloseTo(90, 3);
+  });
+
+  it('bakes constraints into keys for export, leaving the controls out', () => {
+    const { m, clip } = arm();
+    m.constraints = [ik()];
+    moveTarget(clip, [1.2, 0.2, 0], 0);
+    clip.tracks[4].pos.push({ f: 10, v: [-0.5, -0.2, 0.3] });
+    clip.events = [{ f: 5, name: 'Grab' }];
+    const out = prepareRigForExport(m);
+    expect(out.bones.map((b) => b.name)).toEqual(['Shoulder', 'Elbow', 'Hand']);
+    expect(out.constraints).toBeUndefined();
+    // The baked keys alone give the solved pose.
+    for (const f of [0, 4, 10]) expect(dist(evalPose(out, out.clips[0], f).get(3)!.pos, evalPose(m, clip, f).get(3)!.pos)).toBeLessThan(1e-6);
+    // The original is untouched.
+    expect(m.bones.length).toBe(5);
+    const { json } = buildGltf(m, defaultExport);
+    expect(json.animations[0].extras.events).toEqual([{ name: 'Grab', time: +(5 / 24).toFixed(6), frame: 5 }]);
+    expect(json.nodes.some((n: { name: string }) => n.name === 'Hand IK')).toBe(false);
   });
 });

@@ -210,6 +210,17 @@ Open the Rigging workspace (Ctrl+3).
 
 Deleting a joint passes its children and weights to its parent.
 
+### Constraints
+
+Select a joint and add rules it follows when posed, in the Rig panel's Constraints section. They apply in every clip, on top of the keys.
+
+- **IK** bends the joints above this one (Joints sets how many) so it reaches a target. Adding IK makes the target for you, a *control* joint where the end joint is now. Add pole makes a second control the chain bends toward, as an elbow or knee points. Match the target's rotation turns the end joint with it, for a planted foot or a gripping hand.
+- **Limit** keeps a joint's rotation within angles about its own axes. IK keeps to limits as it bends.
+- **Look at** turns a joint to point at another, such as eyes or a head following a control.
+- **Copy rotation** takes another joint's rotation.
+
+Controls (shown with a diamond) move no vertices and are left out of exports. Exports write what the constraints do as plain keys, so the motion plays the same in any engine.
+
 ## Animating
 
 Open the Animation workspace (Ctrl+4) and press Clip > New Clip. Rotate or move a joint and a key is written at the current frame.
@@ -221,6 +232,9 @@ Open the Animation workspace (Ctrl+4) and press Clip > New Clip. Rotate or move 
 - **Curve menu:** Linear, Smooth, Ease In, Ease Out, Overshoot, Anticipate and Hold.
 - **Whole clips:** the Clip menu has Make Seamless Loop, Mirror, Reverse, Change Speed, Reduce Keys and Bake.
 - **Seeing motion:** Onion Skin (Alt+O) shows frames before in red and after in green. Motion Trail draws the selected joints' paths.
+- **IK and FK:** with IK on a limb, move and key its target and the chain follows. Each constraint's weight blends between IK (1) and the joints' own keys (0), and Key turns it into a curve over the clip. Snap IK to FK keys the target where the keyed joints put the end, and Bake IK to FK keys the joints where IK puts them, so switching either way doesn't jump.
+- **Events:** the Event button (E over the timeline, or double-click the ruler) adds a named moment, such as a footstep or a hit, shown as a flag. Drag a flag to move it, double-click to rename, right click to remove. glTF keeps them in each animation's extras as name, time and frame, where Godot and most loaders can read them.
+- **Play range:** Shift-drag the ruler, or press I and O over the timeline, to play and loop just that stretch while you work on it. Drag its ends to change it; × in the timeline bar plays the whole clip again. It's saved with the clip and doesn't affect exports.
 
 | Over the timeline | Input |
 | --- | --- |
@@ -228,6 +242,8 @@ Open the Animation workspace (Ctrl+4) and press Clip > New Clip. Rotate or move 
 | Zoom / pan time | Ctrl+wheel / Shift+wheel or right drag |
 | Fit the clip | A or F |
 | Play | Space or P |
+| Add an event | E, or double-click the ruler |
+| Play range | Shift-drag the ruler; I and O set its ends |
 
 GLB and MS3D store linear keys here, so curves export as the motion they produce: eased stretches gain a key per frame.
 

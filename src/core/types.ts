@@ -131,7 +131,29 @@ export interface Bone {
   parent: number | null;
   /** Rest position of the joint in model space. Rest orientation is identity. */
   head: V3;
+  /** A control for posing, such as an IK target: it moves no vertices and is left out of exports. */
+  control?: boolean;
 }
+
+/**
+ * A rule a joint follows as it's posed, applied after its keys. `weight` 0..1 blends from the keyed pose to the
+ * constraint's; a clip can key it over time.
+ */
+export type Constraint =
+  /** Keep the joint's rotation within Euler angle limits, in degrees, about its own axes. */
+  | { id: number; kind: 'limit'; bone: number; min: V3; max: V3; weight: number }
+  /**
+   * Bend a chain of `chain` joints above `bone` so it reaches `target`'s position. `pole` sets which way the
+   * chain bends; with `align`, the end joint also takes the target's rotation, as a foot or hand would.
+   */
+  | { id: number; kind: 'ik'; bone: number; chain: number; target: number; pole: number | null; align: boolean; weight: number }
+  /** Turn the joint so it points at `target`. */
+  | { id: number; kind: 'lookAt'; bone: number; target: number; weight: number }
+  /** Take `target`'s own rotation. */
+  | { id: number; kind: 'copyRot'; bone: number; target: number; weight: number };
+
+/** A named moment in a clip, for a game to act on: a footstep, a hit, a sound. */
+export interface ClipEvent { f: number; name: string }
 
 export interface Key<T> {
   f: number;
@@ -157,6 +179,12 @@ export interface Clip {
   length: number;
   loop: boolean;
   tracks: Record<number, Track>;
+  /** Named moments, exported with the clip. */
+  events?: ClipEvent[];
+  /** Play only these frames, looping between them while working on a stretch of the clip. */
+  range?: [number, number];
+  /** Keyed constraint weights, by constraint id: IK/FK blends and the like. */
+  weights?: Record<number, Key<number>[]>;
 }
 
 /** A picture to model over, standing behind one orthographic view. Saved with the project, never exported. */
@@ -189,6 +217,8 @@ export interface Model {
   textures: Texture[];
   bones: Bone[];
   clips: Clip[];
+  /** Rules joints follow when posed, in the order they apply. */
+  constraints?: Constraint[];
   nextId: number;
 }
 
@@ -220,6 +250,7 @@ export function cloneModel(m: Model): Model {
     textures: m.textures.map((t) => ({ ...t, ...(t.layers ? { layers: t.layers.map((l) => ({ ...l })) } : {}) })),
     bones: m.bones.map((b) => ({ ...b, head: [...b.head] as V3 })),
     clips: structuredClone(m.clips),
+    ...(m.constraints ? { constraints: structuredClone(m.constraints) } : {}),
     nextId: m.nextId,
   };
 }

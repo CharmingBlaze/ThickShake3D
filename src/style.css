@@ -409,3 +409,11 @@ body.dropping::after { content: "Drop to import"; position: fixed; inset: 8px; z
 .tile-thumb-btn:hover { border-color: #fff; }
 .tile-thumb-btn.active { border-color: #f2b24c; }
 .tile-thumb { display: block; }
+
+/* Timeline play range readout */
+.tl-range { display: inline-flex; align-items: center; gap: 2px; padding: 0 4px; color: #8fe0a6; font-size: 11px; border: 1px solid rgba(143, 224, 166, 0.35); }
+
+/* Rig panel: constraints */
+.constraint-card { border: 1px solid var(--line-2); padding: 6px; margin-bottom: 6px; display: flex; flex-direction: column; gap: 4px; }
+.constraint-head { display: flex; align-items: center; justify-content: space-between; }
+.bone-dot.control { border-radius: 0; transform: rotate(45deg); background: #8fe0a6; }

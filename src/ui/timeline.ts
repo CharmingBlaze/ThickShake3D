@@ -27,7 +27,39 @@ type Drag =
   | { type: 'move'; x0: number; delta: number; copy: boolean }
   | { type: 'scale'; pivot: number; grab: number; factor: number }
   | { type: 'gkey'; ch: Channel; x0: number; y0: number; f0: number; v0: number; moved: boolean }
-  | { type: 'ghandle'; ch: Channel; which: 0 | 1; f: number; moved: boolean };
+  | { type: 'ghandle'; ch: Channel; which: 0 | 1; f: number; moved: boolean }
+  /** Dragging an event flag along the ruler. */
+  | { type: 'event'; index: number; moved: boolean }
+  /** Shift-dragging out a play range on the ruler, or dragging one of its ends. */
+  | { type: 'range'; anchor: number; moved: boolean };
+
+const EVENT = '#7fc8f8';
+
+/** Change the active clip as one undo step. */
+function editClip(label: string, fn: (c: Clip) => void) {
+  const id = ed.activeClip;
+  ed.transact(label, (m) => { const c = m.clips.find((x) => x.id === id); if (c) fn(c); });
+}
+
+/** Add a named event at a frame of the active clip, asking for its name. */
+export function addEvent(frame: number) {
+  const c = ed.clip();
+  if (!c) return;
+  const name = prompt('Event name, for the game to act on (a footstep, a hit, a sound)', 'Event')?.trim();
+  if (!name) return;
+  editClip('Add event', (d) => { (d.events ?? (d.events = [])).push({ f: Math.round(frame), name }); d.events.sort((a, b) => a.f - b.f); });
+  status(`Event "${name}" at frame ${Math.round(frame)}. Drag its flag to move it, double-click to rename, right click to remove.`);
+}
+
+/** Set one end of the active clip's play range at a frame; the other end stays, or is the clip's start or end. */
+export function setRangeEnd(which: 'in' | 'out', frame: number) {
+  const c = ed.clip();
+  if (!c) return;
+  const f = Math.round(frame);
+  const [lo, hi] = c.range ?? [0, c.length];
+  const r: [number, number] = which === 'in' ? [f, Math.max(f + 1, hi)] : [Math.min(lo, f - 1), f];
+  editClip('Set play range', (d) => { d.range = [Math.max(0, r[0]), Math.min(d.length, r[1])]; });
+}
 
 export class Timeline {
   el: HTMLElement;
@@ -100,6 +132,12 @@ export class Timeline {
         menuButton('Curve', ['anim.ease.linear', 'anim.ease.smooth', 'anim.ease.in', 'anim.ease.out', 'anim.ease.overshoot', 'anim.ease.anticipate', 'anim.ease.step']),
         menuButton('Pose', ['anim.copyPose', 'anim.pastePose', 'anim.pasteMirrored', 'anim.mirrorPose', 'anim.resetPose']),
         menuButton('View', ['anim.frameAll', null, 'anim.onion', 'anim.trail', 'anim.togglePose']),
+        c ? button('Event', () => addEvent(ed.frame), { class: 'btn btn-small', title: 'Add a named event at this frame for the game to act on (E over the timeline). Double-click the ruler to add one there.' }) : null,
+        c?.range
+          ? h('span', { class: 'tl-range', title: 'Playback loops on this stretch. Drag its ends on the ruler; Shift-drag the ruler for a new one; I and O set its ends.' },
+            `Range ${c.range[0]}–${c.range[1]}`,
+            button('×', () => editClip('Clear play range', (d) => { delete d.range; }), { class: 'tl-btn', title: 'Play the whole clip again' }))
+          : null,
         h('div', { class: 'seg' }, viewBtn('dope', 'Keys', 'Arrange keys over time'), viewBtn('graph', 'Curves', 'Shape the motion between keys')),
         h('span', { class: 'tl-grow' }),
         c ? numField({ label: 'FPS', value: c.fps, min: 1, max: 240, step: 1, digits: 0, onChange: (v) => ed.transact('Set FPS', (d) => { d.clips.find((x) => x.id === c.id)!.fps = v; }) }) : null,
@@ -144,10 +182,13 @@ export class Timeline {
     if (!ed.playing) return;
     const c = ed.clip();
     if (!c) { ed.playing = false; return; }
+    // A play range loops on its own stretch, whether or not the clip loops.
+    const [lo, hi] = c.range ?? [0, c.length];
     let f = ed.frame + dt * c.fps * this.speed;
-    if (f >= c.length) {
-      if (c.loop) f = f % Math.max(1, c.length);
-      else { f = c.length; ed.playing = false; }
+    if (c.range && (f < lo || ed.frame > hi)) f = lo;
+    if (f >= hi) {
+      if (c.loop || c.range) f = lo + ((f - lo) % Math.max(1, hi - lo));
+      else { f = hi; ed.playing = false; }
     }
     ed.frame = f;
     ed.emit('time');
@@ -200,6 +241,10 @@ export class Timeline {
   }
   frameAll() { this.ppf = 0; this.gRange = null; this.draw(); }
   private xOf(f: number) { return NAME_W + 8 + (f - this.start) * this.ppf; }
+  /** The event flag under x on the ruler, or -1. */
+  private eventAt(x: number, c: Clip): number {
+    return (c.events ?? []).findIndex((ev) => x >= this.xOf(ev.f) - 3 && x <= this.xOf(ev.f) + 8);
+  }
   private frameAt(x: number, c: Clip) { return Math.max(0, Math.min(c.length, Math.round((x - NAME_W - 8) / this.ppf + this.start))); }
 
   // ---------- drawing ----------
@@ -244,6 +289,27 @@ export class Timeline {
       g.fillText(String(f), x, RULER / 2 - 1);
     }
     g.textAlign = 'start';
+    // The play range: tinted on the ruler, the rest of the sheet dimmed.
+    if (c.range) {
+      const a = Math.max(NAME_W, this.xOf(c.range[0])), b = Math.max(NAME_W, this.xOf(c.range[1]));
+      g.fillStyle = 'rgba(0,0,0,0.22)';
+      g.fillRect(NAME_W, RULER, Math.max(0, a - NAME_W), H - RULER);
+      g.fillRect(b, RULER, Math.max(0, W - b), H - RULER);
+      g.fillStyle = 'rgba(143,224,166,0.18)'; g.fillRect(a, 0, Math.max(0, b - a), RULER);
+      g.fillStyle = '#8fe0a6';
+      for (const x of [a, b]) if (x > NAME_W) g.fillRect(x - 1, 0, 2, RULER);
+    }
+    // Events, as flags along the ruler's foot, named where there's room.
+    for (const ev of c.events ?? []) {
+      const x = this.xOf(ev.f);
+      if (x < NAME_W || x > W) continue;
+      g.strokeStyle = EVENT; g.fillStyle = EVENT;
+      g.beginPath(); g.moveTo(x + 0.5, RULER - 11); g.lineTo(x + 0.5, H); g.globalAlpha = 0.35; g.stroke(); g.globalAlpha = 1;
+      g.beginPath(); g.moveTo(x, RULER - 11); g.lineTo(x + 7, RULER - 8); g.lineTo(x, RULER - 5); g.closePath(); g.fill();
+      g.font = '10px "Segoe UI", sans-serif';
+      g.fillText(ev.name, x + 9, RULER - 8, Math.max(20, 120));
+      g.font = '11px "Segoe UI", sans-serif';
+    }
     g.fillStyle = '#1e2125'; g.fillRect(0, 0, NAME_W, RULER);
     g.strokeStyle = '#2b2f35'; g.beginPath(); g.moveTo(NAME_W + 0.5, 0); g.lineTo(NAME_W + 0.5, H); g.stroke();
 
@@ -529,6 +595,15 @@ export class Timeline {
     });
     cv.addEventListener('pointerleave', () => { this.mouseInside = false; if (!this.drag && document.activeElement === cv) cv.blur(); });
     cv.addEventListener('keydown', (e) => this.onKey(e));
+    cv.addEventListener('dblclick', (e) => {
+      const c = ed.clip();
+      const { x, y } = pos(e);
+      if (!c || y > RULER) return;
+      const ev = this.eventAt(x, c);
+      if (ev < 0) { if (x > NAME_W) addEvent(this.frameAt(x, c)); return; }
+      const name = prompt('Event name', c.events![ev].name)?.trim();
+      if (name) editClip('Rename event', (d) => { if (d.events?.[ev]) d.events[ev].name = name; });
+    });
     cv.addEventListener('wheel', (e) => {
       e.preventDefault();
       const c = ed.clip();
@@ -553,9 +628,27 @@ export class Timeline {
       const c = ed.clip();
       if (!c) return;
       const { x, y, h: H } = pos(e);
+      // A right click on an event flag removes it.
+      if (e.button === 2 && y <= RULER) {
+        const ev = this.eventAt(x, c);
+        if (ev >= 0) { const name = c.events![ev].name; editClip('Remove event', (d) => { d.events?.splice(ev, 1); }); status(`Removed event "${name}".`); return; }
+      }
       if (e.button === 1 || e.button === 2) { this.drag = { type: 'pan', x, start: this.start }; return; }
       if (e.button !== 0) return;
-      if (y <= RULER && x > NAME_W) { this.drag = { type: 'scrub' }; ed.frame = this.frameAt(x, c); ed.emit('time'); return; }
+      if (y <= RULER && x > NAME_W) {
+        // An event flag: drag to move it.
+        const ev = this.eventAt(x, c);
+        if (ev >= 0) { ed.begin('Move event'); this.drag = { type: 'event', index: ev, moved: false }; return; }
+        // An end of the play range: drag to move it.
+        if (c.range) {
+          for (const [end, other] of [[0, 1], [1, 0]] as const) {
+            if (Math.abs(this.xOf(c.range[end]) - x) < 5) { ed.begin('Set play range'); this.drag = { type: 'range', anchor: c.range[other], moved: false }; return; }
+          }
+        }
+        // Shift: drag out a play range.
+        if (e.shiftKey) { ed.begin('Set play range'); this.drag = { type: 'range', anchor: this.frameAt(x, c), moved: false }; return; }
+        this.drag = { type: 'scrub' }; ed.frame = this.frameAt(x, c); ed.emit('time'); return;
+      }
       if (this.view === 'graph') { this.graphDown(x, y, H, c); return; }
       if (x < NAME_W) {
         const idx = this.dopeRowAt(y) - 1;
@@ -601,6 +694,23 @@ export class Timeline {
       const { x, y, h: H } = pos(e);
       switch (d.type) {
         case 'scrub': ed.frame = this.frameAt(x, c); ed.emit('time'); return;
+        case 'event': {
+          const ev = ed.clip()?.events?.[d.index];
+          if (!ev) return;
+          const f = this.frameAt(x, c);
+          if (f !== ev.f) { ev.f = f; d.moved = true; status(`${ev.name} at frame ${f}`); }
+          break;
+        }
+        case 'range': {
+          const clip = ed.clip();
+          if (!clip) return;
+          const f = this.frameAt(x, c);
+          if (f === d.anchor && !d.moved) return;
+          clip.range = [Math.min(d.anchor, f), Math.max(d.anchor + (f === d.anchor ? 1 : 0), f)];
+          d.moved = true;
+          status(`Play range ${clip.range[0]} to ${clip.range[1]}`);
+          break;
+        }
         case 'pan': this.start = d.start - (x - d.x) / this.ppf; break;
         case 'box': d.x1 = x; d.y1 = y; break;
         case 'move': {
@@ -646,6 +756,11 @@ export class Timeline {
       } else if ((d.type === 'gkey' || d.type === 'ghandle') && d.moved) {
         ed.commit();
         ed.emitAll();
+      } else if (d.type === 'event' || d.type === 'range') {
+        if (d.moved) {
+          if (d.type === 'event') ed.clip()?.events?.sort((a, b) => a.f - b.f);
+          ed.commit(); ed.emitAll(); status('');
+        } else ed.cancel();
       }
       if (d.type === 'move' || d.type === 'scale') status('');
       void e;
@@ -768,6 +883,9 @@ export class Timeline {
     else if (key === ' ') runCommand('anim.play');
     else if (key === 'escape') { if (this.sel.size) this.clearSelection(); else handled = false; }
     else if (key === 'tab') this.setView(this.view === 'dope' ? 'graph' : 'dope');
+    else if (key === 'i') setRangeEnd('in', ed.frame);
+    else if (key === 'o') setRangeEnd('out', ed.frame);
+    else if (key === 'e') addEvent(ed.frame);
     else handled = false;
     if (handled) { e.preventDefault(); e.stopPropagation(); }
   }
