@@ -234,8 +234,8 @@ app.whenReady().then(async () => {
 
     await js(`T.setWorkspace('uv');T.runCommand('select.none');T.uvEditor.draw();`);
     await sleep(600);
-    const uvState = await js(`const h=document.querySelector('.uv-host');const c=h.querySelector('canvas').getBoundingClientRect();return {display:getComputedStyle(h).display,w:Math.round(c.width),ws:ed.workspace,mode:ed.mode,tab:document.querySelector('.ws-tabs .active').textContent}`);
-    check('UV workspace shows the editor beside the viewport', uvState.display === 'flex' && uvState.w > 200 && uvState.ws === 'uv' && uvState.tab === 'UV', JSON.stringify(uvState));
+    const uvState = await js(`const h=document.querySelector('.uv-host');const c=h.querySelector('canvas').getBoundingClientRect();return {display:getComputedStyle(h).display,w:Math.round(c.width),ws:ed.workspace,mode:ed.mode,tab:document.querySelector('.ws-dropdown').textContent}`);
+    check('UV workspace shows the editor beside the viewport', uvState.display === 'flex' && uvState.w > 200 && uvState.ws === 'uv' && uvState.tab === 'UV Editing', JSON.stringify(uvState));
     await shot('11-uv');
     // Drag a UV island in the editor with the real mouse.
     await js(`T.runCommand('uv.smart')`);

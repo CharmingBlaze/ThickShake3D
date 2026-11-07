@@ -4,7 +4,7 @@ import validator from 'gltf-validator';
 import { runChecks, BUDGETS, triangleCount } from '../src/core/checks';
 import { decimate } from '../src/core/decimate';
 import { knifeCut, loopCut, loopCuts, loopPreview, planKnife, type KnifeClick, type KnifeView } from '../src/core/cuts';
-import { edgeFaces, edgeKey, faceArea, parseEdge, signedVolume, triangulate } from '../src/core/geom';
+import { edgeFaces, edgeKey, faceArea, faceNormal, parseEdge, signedVolume, triangulate } from '../src/core/geom';
 import * as ops from '../src/core/ops';
 import * as prims from '../src/core/primitives';
 import { buildSample } from '../src/core/sample';
@@ -12,6 +12,8 @@ import { applyEase, applyPose, bakeClip, capturePose, copyKeys, deleteKeys, EASE
 import { deformPoints, lathe, partPrim, PARTS, inflateParts, pathLength, PEN_SECTIONS, penFrame, profileAt, quadSilhouette, resamplePath, ROUND_PROFILE, silhouette, tube } from '../src/core/organic';
 import { bezierAt, insertAnchor, nearestOnOutline, sampleOutline, type PenAnchor } from '../src/core/pen';
 import { splitOutline } from '../src/core/limbs';
+import { blendPixel, brushFootprint, floodFill, getPixel, linePixels, rectPixels, strokeLine, uvAtPoint, type Brush, type Pixels, type RGBA } from '../src/core/paint';
+import { cellAt, cellCorners, fitTileToFace, placeTileQuad, tileAtPixel, tileCounts, tileForCell, tileOfFace, tilePixels, tileUV, type TileBlock, type TileGrid, type TilePlane } from '../src/core/tiles';
 import { addLimb, addStarter, deformPiece, fusePieces, limbFrame, radialPieces, reducePiece, twinOf, alignPieces, arrayPieces, colorsToMaterials, dropPieces, mirrorPiece, pieceBounds, scaleFigure, snapPieces } from '../src/core/blockout';
 import { bounds, dist } from '../src/core/geom';
 import { applyPreset, bakeModelGradient, bakeTextureGradient, blankOrm, evenStops, flipGreen, gradientDirection, guessMapKind, harmonies, hexToHsv, hexToRgb, hsvToHex, MATERIAL_PRESETS, normalFromHeight, packChannel, paletteFromImage, parseHex, parsePaletteText, reverseStops, sampleGradient } from '../src/core/materials';
@@ -689,6 +691,125 @@ describe('pen shapes', () => {
     expect(fr.section(fr.uOf(0.8))!.c[1]).toBeGreaterThan(0.4);
     const flipped = penFrame(tall.slice().reverse(), [0, 0, 0], [1, 0, 0], [0, 1, 0])!;
     expect(flipped.section(flipped.uOf(0.8))!.c[1]).toBeGreaterThan(0.4);
+  });
+});
+
+describe('painting pixels', () => {
+  const blank = (w = 8, h = 8): Pixels => ({ width: w, height: h, data: new Uint8ClampedArray(w * h * 4) });
+  const alphaAt = (img: Pixels, x: number, y: number) => img.data[(y * img.width + x) * 4 + 3];
+  const red: RGBA = [255, 0, 0, 255];
+  const pencil = (size = 1): Brush => ({ size, shape: 'square', opacity: 1, hardness: 1, erase: false });
+
+  it('draws gapless one-pixel lines', () => {
+    const pts = linePixels(0, 0, 7, 3);
+    expect(pts[0]).toEqual([0, 0]);
+    expect(pts[pts.length - 1]).toEqual([7, 3]);
+    pts.slice(1).forEach(([x, y], i) => expect(Math.max(Math.abs(x - pts[i][0]), Math.abs(y - pts[i][1]))).toBe(1));
+  });
+
+  it('paints pixel brushes as whole pixels, and erases', () => {
+    const img = blank();
+    strokeLine(img, 1, 1, 6, 1, red, pencil(1), new Map());
+    for (let x = 1; x <= 6; x++) expect(alphaAt(img, x, 1)).toBe(255);
+    expect(alphaAt(img, 1, 2)).toBe(0);
+    strokeLine(img, 3, 1, 3, 1, red, { ...pencil(1), erase: true }, new Map());
+    expect(alphaAt(img, 3, 1)).toBe(0);
+    expect(brushFootprint(4, 4, pencil(3)).length).toBe(9);
+  });
+
+  it("doesn't build up past its opacity within one stroke", () => {
+    const img = blank();
+    const b: Brush = { size: 3, shape: 'soft', opacity: 0.5, hardness: 1, erase: false };
+    const covered = new Map<number, number>();
+    strokeLine(img, 4, 4, 4.2, 4, red, b, covered);
+    strokeLine(img, 4.2, 4, 4, 4, red, b, covered);
+    expect(alphaAt(img, 4, 4)).toBeGreaterThan(110);
+    expect(alphaAt(img, 4, 4)).toBeLessThan(140);
+  });
+
+  it('fills the connected area only, inside a closed outline', () => {
+    const img = blank();
+    for (const [x, y] of rectPixels(1, 1, 5, 5, false)) blendPixel(img, x, y, [0, 0, 255, 255]);
+    expect(floodFill(img, 3, 3, red)).toBe(9);
+    expect(getPixel(img, 3, 3)).toEqual(red);
+    expect(alphaAt(img, 0, 0)).toBe(0);
+    expect(floodFill(img, 3, 3, red)).toBe(0);
+  });
+
+  it('finds the texture coordinate under a point on a face', () => {
+    const m = modelOf(prims.plane(2, 2, 1));
+    const fi = 0;
+    const f = m.faces[fi];
+    // Each corner maps to its own UV; the centre maps to the average.
+    const centre = [0, 1, 2].map((a) => f.v.reduce((s, v) => s + m.verts[v].p[a], 0) / f.v.length) as V3;
+    const uv = uvAtPoint(m, fi, centre)!;
+    const avg = [0, 1].map((k) => f.uv.reduce((s, u) => s + u[k], 0) / f.uv.length);
+    expect(uv[0]).toBeCloseTo(avg[0], 6);
+    expect(uv[1]).toBeCloseTo(avg[1], 6);
+    expect(uvAtPoint(m, fi, [50, 0, 50])).toBeNull();
+  });
+});
+
+describe('tiles', () => {
+  const grid: TileGrid = { imageW: 64, imageH: 32, tileW: 16, tileH: 16, marginX: 0, marginY: 0, spacingX: 0, spacingY: 0 };
+
+  it('cuts an atlas into tiles, with margins and spacing', () => {
+    expect(tileCounts(grid)).toEqual({ cols: 4, rows: 2 });
+    expect(tileUV(grid, 1, 1)).toEqual([0.25, 0.5, 0.5, 1]);
+    const spaced: TileGrid = { ...grid, imageW: 70, marginX: 1, marginY: 1, spacingX: 2, spacingY: 2, imageH: 36 };
+    expect(tileCounts(spaced)).toEqual({ cols: 3, rows: 2 });
+    expect(tilePixels(spaced, 2, 1)).toEqual([37, 19, 16, 16]);
+    expect(tileAtPixel(spaced, 37.5, 19.5)).toEqual({ col: 2, row: 1 });
+    // The gap between tiles belongs to neither.
+    expect(tileAtPixel(spaced, 17.5, 5)).toBeNull();
+  });
+
+  it('fits a tile to a wall upright, and turns and mirrors it', () => {
+    const m = emptyModel();
+    ops.addPrim(m, prims.box(1, 1, 1), 'Box');
+    const rect = tileUV(grid, 0, 0);
+    // The front face: the corner at top left in the scene gets the tile's top left.
+    const front = m.faces.find((f) => faceNormal(m, f)[2] > 0.9)!;
+    fitTileToFace(m, front, rect);
+    const topLeft = front.v.findIndex((v) => m.verts[v].p[0] < 0 && m.verts[v].p[1] > 0);
+    expect(front.uv[topLeft][0]).toBeCloseTo(rect[0], 9);
+    expect(front.uv[topLeft][1]).toBeCloseTo(rect[1], 9);
+    fitTileToFace(m, front, rect, { rot: 1, flipX: false, flipY: false });
+    // A quarter turn clockwise brings the tile's bottom-left corner to the top left.
+    expect(front.uv[topLeft][0]).toBeCloseTo(rect[0], 9);
+    expect(front.uv[topLeft][1]).toBeCloseTo(rect[3], 9);
+    expect(tileOfFace(grid, front)).toEqual({ col: 0, row: 0 });
+  });
+
+  it('repeats a block of tiles as a pattern, and picks random tiles that stay put', () => {
+    const b: TileBlock = { col: 1, row: 0, w: 2, h: 2 };
+    expect(tileForCell(b, { x: 0, y: -1, z: 0 }, false)).toEqual({ col: 1, row: 0 });
+    expect(tileForCell(b, { x: 3, y: -1, z: 0 }, false)).toEqual({ col: 2, row: 0 });
+    expect(tileForCell(b, { x: 0, y: -2, z: 0 }, false)).toEqual({ col: 1, row: 1 });
+    const r1 = tileForCell(b, { x: 5, y: 7, z: 1 }, true), r2 = tileForCell(b, { x: 5, y: 7, z: 1 }, true);
+    expect(r1).toEqual(r2);
+    const seen = new Set<string>();
+    for (let x = 0; x < 40; x++) { const t = tileForCell(b, { x, y: 0, z: 0 }, true); seen.add(`${t.col},${t.row}`); }
+    expect(seen.size).toBe(4);
+  });
+
+  it('builds tile quads that share corners, face the viewer and replace in place', () => {
+    const m = emptyModel();
+    const g = makeGroup(m, 'Tiles', null).id;
+    const plane: TilePlane = { axis: 2, depth: 0, facing: 1 };
+    const rect = tileUV(grid, 0, 0);
+    placeTileQuad(m, g, cellCorners(plane, 0, 0, 1), rect);
+    placeTileQuad(m, g, cellCorners(plane, 1, 0, 1), rect);
+    expect(m.faces.length).toBe(2);
+    expect(m.verts.length).toBe(6);
+    m.faces.forEach((f) => expect(faceNormal(m, f)[2]).toBeGreaterThan(0.99));
+    placeTileQuad(m, g, cellCorners(plane, 1, 0, 1), tileUV(grid, 3, 1));
+    expect(m.faces.length).toBe(2);
+    expect(tileOfFace(grid, m.faces[1])).toEqual({ col: 3, row: 1 });
+    // A floor tile faces up.
+    placeTileQuad(m, g, cellCorners({ axis: 1, depth: 0, facing: 1 }, 0, 0, 1), rect);
+    expect(faceNormal(m, m.faces[2])[1]).toBeGreaterThan(0.99);
+    expect(cellAt(plane, [1.5, 0.2, 0], 1)).toEqual([1, 0]);
   });
 });
 

@@ -65,15 +65,29 @@ export function shaderSignature(d: Material, mat: THREE.Material) {
   return [d.unlit, d.alphaMode, mat.transparent, mat.side, d.maps.base, d.maps.normal, d.maps.orm, d.maps.emissive, (d.clearcoat ?? 0) > 0, (d.sheen ?? 0) > 0].join('|');
 }
 
+/**
+ * Canvases being painted, by texture id. While one is here, views show it instead of the saved image, so a stroke
+ * appears as it's drawn; and a texture reloading after a stroke starts from it, so it doesn't flash.
+ */
+export const liveTextures = new Map<number, HTMLCanvasElement>();
+
 export function makeDocTexture(t: Texture, srgb: boolean, onLoad: () => void): THREE.Texture {
   const img = new Image();
-  const tex = new THREE.Texture(img);
-  img.onload = () => { tex.needsUpdate = true; onLoad(); };
+  const live = liveTextures.get(t.id);
+  const tex = new THREE.Texture(live ?? img);
+  if (live) tex.needsUpdate = true;
+  img.onload = () => { if (!liveTextures.has(t.id)) { tex.image = img; tex.needsUpdate = true; } onLoad(); };
   img.src = t.url;
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
   tex.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
-  tex.anisotropy = 8;
   tex.flipY = false;
+  if (t.pixelated) {
+    // Pixel art: each texel a crisp square, at any distance.
+    tex.magFilter = THREE.NearestFilter;
+    tex.minFilter = THREE.NearestFilter;
+    tex.generateMipmaps = false;
+    tex.anisotropy = 1;
+  } else tex.anisotropy = 8;
   return tex;
 }
 

@@ -5,8 +5,8 @@ import { type Clip, type Model, cloneModel, emptyModel } from './types';
 
 export type ChangeKind = 'topology' | 'geometry' | 'selection' | 'materials' | 'groups' | 'skeleton' | 'anim' | 'time' | 'tool' | 'view' | 'file' | 'history';
 export type SelMode = 'vertex' | 'edge' | 'face' | 'group' | 'bone';
-export type ToolId = 'select' | 'move' | 'rotate' | 'scale' | 'extrude' | 'vertex' | 'face' | 'box' | 'sphere' | 'geosphere' | 'cylinder' | 'cone' | 'pyramid' | 'plane' | 'torus' | 'limb' | 'part' | 'stroke' | 'blob' | 'pen' | 'lathe' | 'sculpt' | 'capsule' | 'tapered' | 'wedge' | 'stairs' | 'doorway' | 'joint' | 'ik' | 'paint' | 'loopcut' | 'knife';
-export type Workspace = 'block' | 'model' | 'uv' | 'rig' | 'animate';
+export type ToolId = 'select' | 'move' | 'rotate' | 'scale' | 'extrude' | 'vertex' | 'face' | 'box' | 'sphere' | 'geosphere' | 'cylinder' | 'cone' | 'pyramid' | 'plane' | 'torus' | 'limb' | 'part' | 'stroke' | 'blob' | 'pen' | 'lathe' | 'sculpt' | 'capsule' | 'tapered' | 'wedge' | 'stairs' | 'doorway' | 'joint' | 'ik' | 'paint' | 'loopcut' | 'knife' | 'texpaint' | 'tile';
+export type Workspace = 'block' | 'model' | 'uv' | 'paint' | 'tiles' | 'rig' | 'animate';
 
 export interface OpParam { key: string; label: string; type: 'number' | 'bool' | 'choice'; value: any; min?: number; max?: number; step?: number; options?: [any, string][] }
 

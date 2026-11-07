@@ -4,6 +4,9 @@ import { ed, type OpParam, type SelMode, type ToolId } from '../core/editor';
 import { KnifeTool, LoopTool, type CutHost } from './cutTools';
 import { depthKey, PenTool, widthKey, type PenBuild } from './penTool';
 import { ExtrudeTool } from './extrudeTool';
+import { TexPaintTool, TileTool } from './surfaceTools';
+import { tileKey } from '../ui/tileEditor';
+import { app } from '../ui/app';
 import { bounds, dist as dist3, edgeKey, faceNormal, norm, parseEdge } from '../core/geom';
 import * as ops from '../core/ops';
 import * as prims from '../core/primitives';
@@ -96,6 +99,9 @@ export class Viewports {
     get sg() { return vp.sg; },
     invalidate: () => vp.invalidate(),
   }))(this);
+  /** Painting textures on the model, and tiling it, in the Paint and Tile workspaces. */
+  readonly texPaint = ((vp: Viewports) => new TexPaintTool({ get sg() { return vp.sg; }, invalidate: () => vp.invalidate() }))(this);
+  readonly tileTool = ((vp: Viewports) => new TileTool({ get sg() { return vp.sg; }, invalidate: () => vp.invalidate() }))(this);
   private oneShotFrom: ToolId | null = null;
   private hover: Handle | null = null;
   private mouse = { x: 0, y: 0, inside: false };
@@ -142,6 +148,8 @@ export class Viewports {
       if (this.pen.active && ed.tool !== this.pen.owner) this.pen.reset();
       this.cancelModal();
       if (ed.tool !== 'extrude') { this.extrudeTool.cancel(); this.extrudeTool.clearHover(); } else if (!this.extrudeTool.active) this.extrudeTool.hint();
+      if (ed.tool !== 'tile') { this.tileTool.cancel(); this.tileTool.clearHover(); }
+      if (ed.tool !== 'texpaint') this.texPaint.up();
       if (ed.tool === 'pen') this.pen.hint();
       if (ed.tool !== 'knife' && ed.tool !== 'loopcut') this.oneShotFrom = null;
     });
@@ -704,6 +712,8 @@ export class Viewports {
       if (ed.tool === 'loopcut') this.loopTool.draw(g, p);
       if (ed.tool === 'pen' || ed.tool === 'blob') this.pen.draw(g, p);
       if (ed.tool === 'extrude' || this.extrudeTool.active) this.extrudeTool.draw(g, p);
+      if (ed.tool === 'texpaint') this.texPaint.draw(g, p);
+      if (ed.tool === 'tile') this.tileTool.draw(g, p);
       this.drawModal(g, p);
       if (p === this.active && this.layout === 'quad') {
         g.strokeStyle = 'rgba(242,178,76,.55)'; g.lineWidth = 1;
@@ -747,6 +757,9 @@ export class Viewports {
   toolKey(e: KeyboardEvent): boolean {
     if (this.modal) return this.modalKey(e);
     if (this.extrudeTool.active) return this.extrudeTool.key(e);
+    // In the Paint and Tile workspaces their own keys come first: tools, colours, turning tiles.
+    if (ed.tool === 'tile' && tileKey(e)) return true;
+    if (ed.tool === 'texpaint' && app.paintKey(e)) return true;
     if (ed.tool === 'pen' || (ed.tool === 'blob' && this.pen.active)) return this.pen.key(e);
     if (ed.tool === 'knife') {
       if (this.knife.key(e)) return true;
@@ -1347,6 +1360,8 @@ export class Viewports {
         if (ed.tool === 'knife' && p) { this.knife.move(p, x, y, e); return; }
         if ((ed.tool === 'pen' || (ed.tool === 'blob' && this.pen.active)) && p) { this.pen.move(p, x, y, e); return; }
         if ((ed.tool === 'extrude' || this.extrudeTool.active) && p) { this.extrudeTool.move(p, x, y, e); return; }
+        if (ed.tool === 'texpaint' && p) { this.texPaint.move(p, x, y); return; }
+        if (ed.tool === 'tile' && p) { this.tileTool.move(p, x, y); return; }
         if (ed.tool === 'loopcut') {
           const at = p ?? this.active;
           if (at) this.loopTool.move(at, x, y, e);
@@ -1384,7 +1399,7 @@ export class Viewports {
     ov.addEventListener('pointerleave', () => { this.mouse.inside = false; this.extrudeTool.clearHover(); this.invalidate(); });
 
     const finish = (e: PointerEvent) => {
-      if (e.button === 0) { this.knife.up(); this.loopTool.up(); this.pen.up(); this.extrudeTool.up(); }
+      if (e.button === 0) { this.knife.up(); this.loopTool.up(); this.pen.up(); this.extrudeTool.up(); this.texPaint.up(); this.tileTool.up(); }
       const d = this.drag;
       if (!d) return;
       this.drag = null;
@@ -1481,6 +1496,8 @@ export class Viewports {
       case 'select': case 'move': case 'rotate': case 'scale':
         this.startSelect(p, x, y, e); return;
       case 'extrude': this.extrudeTool.down(p, x, y, e); return;
+      case 'texpaint': this.texPaint.down(p, x, y, e); return;
+      case 'tile': this.tileTool.down(p, x, y, e); return;
       case 'vertex': this.placeVertex(p, x, y); return;
       case 'face': this.faceClick(p, x, y); return;
       case 'joint': this.placeJoint(p, x, y); return;

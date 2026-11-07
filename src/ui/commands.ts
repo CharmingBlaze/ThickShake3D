@@ -6,7 +6,7 @@ import { addStarter, alignPieces, arrayPieces, colorsToMaterials, deformPiece, d
 import { PARTS } from '../core/organic';
 import * as THREE from 'three';
 import { decimate } from '../core/decimate';
-import { ed, type SelMode, type ToolId } from '../core/editor';
+import { ed, type SelMode, type ToolId, type Workspace } from '../core/editor';
 import { bounds, edgeFaces, edgeKey, faceNormal, parseEdge } from '../core/geom';
 import * as ops from '../core/ops';
 import * as prims from '../core/primitives';
@@ -643,8 +643,18 @@ if (native) {
   def('view.fullscreen', 'Toggle Fullscreen', () => { void native!.toggleFullscreen(); }, { key: 'F11' });
   def('view.devtools', 'Developer Tools', () => { void native!.toggleDevtools(); });
 }
-for (const [w, l, k] of [['block', 'Blockout', 'Ctrl+5'], ['model', 'Modeling', 'Ctrl+1'], ['uv', 'UV Editing', 'Ctrl+2'], ['rig', 'Rigging', 'Ctrl+3'], ['animate', 'Animation', 'Ctrl+4']] as const) {
-  def(`workspace.${w}`, `${l} Workspace`, () => app.setWorkspace(w), { key: k, checked: () => ed.workspace === w });
+/** Every workspace, in the order the workspace menu lists them. */
+export const WORKSPACE_LIST: { id: Workspace; label: string; key: string }[] = [
+  { id: 'block', label: 'Blockout', key: 'Ctrl+5' },
+  { id: 'model', label: 'Modeling', key: 'Ctrl+1' },
+  { id: 'uv', label: 'UV Editing', key: 'Ctrl+2' },
+  { id: 'paint', label: 'Paint', key: 'Ctrl+6' },
+  { id: 'tiles', label: 'Tile Editor', key: 'Ctrl+7' },
+  { id: 'rig', label: 'Rigging', key: 'Ctrl+3' },
+  { id: 'animate', label: 'Animation', key: 'Ctrl+4' },
+];
+for (const { id, label, key } of WORKSPACE_LIST) {
+  def(`workspace.${id}`, `${label} Workspace`, () => app.setWorkspace(id), { key, checked: () => ed.workspace === id });
 }
 
 // ---------- UV ----------

@@ -163,6 +163,33 @@ Seams are optional: to force a cut somewhere, select edges or faces and press Al
 
 View > Export UV Layout saves the wireframe as a transparent PNG to paint over.
 
+## Painting textures
+
+Pick Paint from the workspace menu (Ctrl+6). The texture panel on the left shows the texture of the selection, or the active part, with the model's UV layout over it.
+
+- **No texture yet?** Choose a size and press New texture. It's filled with the part's colour, and textures of 256 or smaller start as pixel art.
+- **Tools:** Pencil (P) paints hard pixels, Brush (B) is soft with Opacity and Hardness, Eraser (E), Fill (G) with Tolerance and Every match, Line (L), Rectangle (U), and Pick colour (I). Alt picks a colour with any tool.
+- **Colours:** left click paints the main colour and right click the second; X swaps them. Click a swatch for the colour picker. The palette strip below has the built-in and your own palettes, plus recent colours.
+- **Paint on the model:** drag on it in the view with the same tools. Shift paints the second colour.
+- **More:** `[` and `]` change the size, M mirrors across the texture's centre, F fits the texture, and Space-drag or the middle button pans. The wheel zooms in whole steps, so pixels stay square, and a pixel grid shows when zoomed in.
+- **Pixel art** keeps a texture sharp in the view and exports it with nearest-neighbour sampling in glTF.
+
+Every stroke is one undo step.
+
+## Tiles
+
+Pick Tile Editor from the workspace menu (Ctrl+7). The panel on the left shows the tile atlas.
+
+- **The atlas:** press Load atlas… for an image of tiles, or it uses the selection's own texture. Set Tile W and H, and Margin and Spacing if the tiles have gaps. Click a tile to choose it, or drag over several to choose a block. A preview shows it as it will go down.
+- **Paint (P):** drag across faces. Each face gets the tile fitted to its own shape and upright as it stands in the scene, so walls, floors and slopes all read the right way. A block of tiles repeats as a pattern across neighbouring faces; with Random on, each face takes a random tile from the block that stays put if painted again.
+- **Fill (G):** tiles every face joined to the one clicked on the same flat surface.
+- **Build (T):** click or drag to add tile squares, the way tile-based modelers do. They go on the flat face under the mouse, or on the view's own grid plane, which Page Up and Page Down move a tile at a time. Size sets a tile's width in metres. Built tiles share corners with their neighbours, so they make one clean surface.
+- **Erase (E)** removes built tiles; it never touches the rest of a model. **Pick (I)**, or Alt-click in any mode, takes the tile a face shows.
+- **Turn and flip:** R turns the tile clockwise and Shift+R back; F flips it left to right and Shift+F upside down. `[` and `]` step through the atlas.
+- **Inset** pulls each tile in by half a pixel, so neighbours never bleed in on smoothed textures.
+
+Every stroke is one undo step.
+
 ## Rigging
 
 Open the Rigging workspace (Ctrl+3).

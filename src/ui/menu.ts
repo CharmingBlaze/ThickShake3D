@@ -60,8 +60,12 @@ export function flyoutButton(label: string, icon: string, items: (FlyoutItem | n
 window.addEventListener('pointerdown', (e) => { if (open && !open.menu.contains(e.target as Node)) closeMenu(); });
 window.addEventListener('keydown', (e) => { if (e.key === 'Escape' && open) { e.stopPropagation(); closeMenu(); } }, true);
 
-export function menuButton(label: string, ids: (string | null)[]): HTMLElement {
-  const b = h('button', { class: 'btn btn-small uv-menu-btn', 'aria-haspopup': 'menu' }, label, svgIcon(CHEVRON, 12));
+/**
+ * A button that opens a dropdown of commands. `opts.class` replaces the button's look; `opts.itemLabel` names the
+ * items instead of the commands' own labels, and `opts.title` is its tooltip.
+ */
+export function menuButton(label: string, ids: (string | null)[], opts: { class?: string; itemLabel?: (id: string) => string; title?: string } = {}): HTMLElement {
+  const b = h('button', { class: opts.class ?? 'btn btn-small uv-menu-btn', 'aria-haspopup': 'menu', title: opts.title }, h('span', { class: 'menu-btn-label' }, label), svgIcon(CHEVRON, 12));
   b.addEventListener('pointerdown', (e: PointerEvent) => {
     e.stopPropagation();
     const wasOpen = open?.button === b;
@@ -76,7 +80,7 @@ export function menuButton(label: string, ids: (string | null)[]): HTMLElement {
       return h('button', {
         class: 'menu-item', role: 'menuitem', disabled: c.enabled ? !c.enabled() : false, title: c.hint && c.hint !== 'hidden' ? c.hint : undefined,
         onclick: () => { closeMenu(); runCommand(id); },
-      }, h('span', { class: 'menu-check' }, c.checked?.() ? svgIcon(ICONS.check, 14) : null), h('span', { class: 'menu-label' }, c.label), c.key ? h('kbd', null, c.key) : null);
+      }, h('span', { class: 'menu-check' }, c.checked?.() ? svgIcon(ICONS.check, 14) : null), h('span', { class: 'menu-label' }, opts.itemLabel?.(id) ?? c.label), c.key ? h('kbd', null, c.key) : null);
     }));
     document.body.appendChild(menu);
     open = { menu, button: b };

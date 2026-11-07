@@ -5,7 +5,10 @@ import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment
 import { ed } from '../core/editor';
 import { parseEdge, triangulateFace } from '../core/geom';
 import { blockColorOf } from '../core/blockout';
-import { fillLit, fillUnlit, makeDocTexture, newLitMaterial, newUnlitMaterial, shaderSignature, type TexOf } from './materialView';
+import { fillLit, fillUnlit, liveTextures, makeDocTexture, newLitMaterial, newUnlitMaterial, shaderSignature, type TexOf } from './materialView';
+
+/** A cached map is rebuilt when the texture is painted (rev) or switched to or from pixel art. */
+const texKey = (owner: number, slot: string, t: DocTexture) => `${owner}:${slot}:${t.id}:${t.rev ?? 0}${t.pixelated ? 'p' : ''}`;
 import { viewBasis } from './pane';
 import { boneWeight } from '../core/skeleton';
 import type { Material as DocMaterial, Texture as DocTexture } from '../core/types';
@@ -164,9 +167,21 @@ export class SceneGraph {
   }
 
   // ---------- materials ----------
+  /** Show a canvas being painted in place of a texture's saved image, in every material that uses it. */
+  showLiveTexture(texId: number) {
+    const live = liveTextures.get(texId);
+    if (!live) return;
+    for (const [key, tex] of this.texCache) {
+      if (key.split(':')[2] !== String(texId)) continue;
+      if (tex.image !== live) tex.image = live;
+      tex.needsUpdate = true;
+    }
+    this.onDirty();
+  }
+
   /** Each material keeps its own copy of a map, since each can tile it differently. */
   private texture(owner: number, slot: string, t: DocTexture, srgb: boolean): THREE.Texture {
-    const key = `${owner}:${slot}:${t.id}`;
+    const key = texKey(owner, slot, t);
     let tex = this.texCache.get(key);
     if (!tex) {
       tex = makeDocTexture(t, srgb, () => this.onDirty());
@@ -181,7 +196,10 @@ export class SceneGraph {
     for (const [id, mat] of this.pbr) if (!live.has(id)) { mat.dispose(); this.pbr.delete(id); }
     for (const [id, mat] of this.unlit) if (!live.has(id)) { mat.dispose(); this.unlit.delete(id); }
     const used = new Set<string>();
-    for (const d of m.materials) for (const [slot, id] of Object.entries(d.maps)) used.add(`${d.id}:${slot}:${id}`);
+    for (const d of m.materials) for (const [slot, id] of Object.entries(d.maps)) {
+      const t = m.textures.find((x) => x.id === id);
+      if (t) used.add(texKey(d.id, slot, t));
+    }
     for (const [key, tex] of this.texCache) if (!used.has(key)) { tex.dispose(); this.texCache.delete(key); }
     for (const d of m.materials) this.applyMaterial(d);
   }

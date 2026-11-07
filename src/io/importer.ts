@@ -68,7 +68,9 @@ function fromObject(root: THREE.Object3D, clips: THREE.AnimationClip[], name: st
     const r = textureToUrl(t);
     if (!r) return undefined;
     const id = newId(m);
-    m.textures.push({ id, name: t.name || label, url: r.url, width: r.w, height: r.h });
+    // Nearest-neighbour sampling in the file means pixel art; keep it sharp.
+    const pixelated = t.magFilter === THREE.NearestFilter ? true : undefined;
+    m.textures.push({ id, name: t.name || label, url: r.url, width: r.w, height: r.h, ...(pixelated ? { pixelated } : {}) });
     texMap.set(t, id);
     return id;
   };

@@ -199,7 +199,8 @@ export function buildGltf(m: Model, o: ExportOptions): { json: any; bin: Uint8Ar
     if (i === undefined) {
       const { mime, bytes } = dataUrlBytes(t.url);
       images.push({ name: t.name, mimeType: mime, bufferView: b.addView(bytes) });
-      textures.push({ source: images.length - 1, sampler: 0 });
+      // Pixel art keeps its pixels sharp in engines too: sampler 1 is nearest-neighbour.
+      textures.push({ source: images.length - 1, sampler: t.pixelated ? 1 : 0 });
       i = textures.length - 1;
       textureIndex.set(t.id, i);
     }
@@ -371,7 +372,7 @@ export function buildGltf(m: Model, o: ExportOptions): { json: any; bin: Uint8Ar
   if (materials.length) json.materials = materials;
   if (textures.length) {
     json.textures = textures; json.images = images;
-    json.samplers = [{ magFilter: 9729, minFilter: 9987, wrapS: 10497, wrapT: 10497 }];
+    json.samplers = [{ magFilter: 9729, minFilter: 9987, wrapS: 10497, wrapT: 10497 }, { magFilter: 9728, minFilter: 9728, wrapS: 10497, wrapT: 10497 }];
   }
   if (!json.meshes.length) delete json.meshes;
   if (!json.nodes.length) delete json.nodes;

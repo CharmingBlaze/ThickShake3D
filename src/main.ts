@@ -9,7 +9,7 @@ import { autosave, native, recentFiles } from './io/platform';
 import { exportOBJ } from './io/simple';
 import { parseProject, serializeProject } from './io/project';
 import { app } from './ui/app';
-import { addReference, bindShortcuts, commands, confirmDiscard, isImageFile, loadOpened, mergeOpened, runCommand, TOOLS } from './ui/commands';
+import { addReference, bindShortcuts, commands, confirmDiscard, isImageFile, loadOpened, mergeOpened, runCommand, TOOLS, WORKSPACE_LIST } from './ui/commands';
 import { button, h, ICONS, numField, renderInto, svgIcon } from './ui/dom';
 import { modal, reportError, setStatusEl, toast } from './ui/feedback';
 import { buildDock, flipNormalGreen, halveTextures, importImageFiles, makeNormalFromBase, makePaletteFromPixels, modelStats, packOrmImage, panelState, refreshDock } from './ui/panels';
@@ -17,7 +17,9 @@ import { Timeline } from './ui/timeline';
 import { UVEditor } from './ui/uvEditor';
 import type { MapSlot } from './core/types';
 import { colorStore } from './ui/colorPicker';
-import { flyoutButton } from './ui/menu';
+import { flyoutButton, menuButton } from './ui/menu';
+import { PaintEditor } from './ui/paintEditor';
+import { TileEditor } from './ui/tileEditor';
 import type { Shading } from './view/scene';
 import { Viewports } from './view/viewports';
 
@@ -75,9 +77,14 @@ const statusText = h('span', { class: 'status-text' });
 setStatusEl(statusText);
 
 const titleName = h('span', { class: 'title-name' });
-const wsTabs = h('div', { class: 'ws-tabs', role: 'tablist', 'aria-label': 'Workspaces' }, ([
-  ['block', 'Blockout'], ['model', 'Model'], ['uv', 'UV'], ['rig', 'Rig'], ['animate', 'Animate'],
-] as [Workspace, string][]).map(([w, l]) => h('button', { 'data-ws': w, role: 'tab', onclick: () => setWorkspace(w) }, l)));
+// Workspaces: a dropdown showing the current one, so there's room for more of them.
+const WORKSPACES = WORKSPACE_LIST.map((w) => w.id);
+const wsLabel = (w: Workspace) => WORKSPACE_LIST.find((x) => x.id === w)?.label ?? w;
+const wsTabs = menuButton(wsLabel(ed.workspace), WORKSPACES.map((w) => `workspace.${w}`), {
+  class: 'ws-dropdown',
+  title: 'Workspace',
+  itemLabel: (id) => wsLabel(id.slice('workspace.'.length) as Workspace),
+});
 
 const options = h('div', { class: 'optionsbar' });
 
@@ -124,7 +131,11 @@ const vp = new Viewports(stageHost);
 app.vp = vp;
 
 const uvEditor = new UVEditor();
+// The panel beside the view: the UV editor, the texture painter or the tile atlas, by workspace.
+const paintEditor = new PaintEditor();
+const tileEditor = new TileEditor();
 uvHost.appendChild(uvEditor.el);
+const sidePanelFor = (w: Workspace) => (w === 'paint' ? paintEditor.el : w === 'tiles' ? tileEditor.el : uvEditor.el);
 
 const timeline = new Timeline();
 app.timeline = timeline;
@@ -279,11 +290,8 @@ function syncTools() {
     b.setAttribute('aria-pressed', String(on));
   });
   primitivesBtn.classList.toggle('active', PRIMITIVES.includes(ed.tool));
-  wsTabs.querySelectorAll('button').forEach((b) => {
-    const on = (b as HTMLElement).dataset.ws === ed.workspace;
-    b.classList.toggle('active', on);
-    b.setAttribute('aria-selected', String(on));
-  });
+  const wsName = wsTabs.querySelector('.menu-btn-label');
+  if (wsName && wsName.textContent !== wsLabel(ed.workspace)) wsName.textContent = wsLabel(ed.workspace);
 }
 
 let optionsScheduled = false;
@@ -322,6 +330,8 @@ let beforeBlock: { surface: boolean; mirror: boolean; wire: boolean; shading: Sh
 
 function setWorkspace(w: Workspace) {
   if (ed.workspace === 'animate' && w !== 'animate') { ed.tool = 'select'; ed.showWire = true; }
+  // Leaving Paint or Tiles puts their tools away.
+  if ((ed.tool === 'texpaint' && w !== 'paint') || (ed.tool === 'tile' && w !== 'tiles')) ed.tool = 'select';
   if (ed.testPose && w !== 'rig') { ed.setTestPose(false); ed.tool = 'select'; }
   if (beforeBlock && w !== 'block') {
     ed.drawOnSurface = beforeBlock.surface;
@@ -335,7 +345,9 @@ function setWorkspace(w: Workspace) {
   ed.workspace = w;
   const persp = vp.panes[1];
   ed.playing = false;
-  stageRow.classList.toggle('with-uv', w === 'uv');
+  stageRow.classList.toggle('with-uv', w === 'uv' || w === 'paint' || w === 'tiles');
+  const side = sidePanelFor(w);
+  if (uvHost.firstChild !== side) uvHost.replaceChildren(side);
   switch (w) {
     case 'block':
       if (!beforeBlock) beforeBlock = { surface: ed.drawOnSurface, mirror: ed.mirrorX, wire: ed.showWire, shading: vp.panes.map((p) => p.shading) };
@@ -367,6 +379,25 @@ function setWorkspace(w: Workspace) {
       app.showTab('material');
       if (ed.mode === 'bone') ed.setMode('face');
       break;
+    case 'paint':
+      ed.pose = false;
+      vp.setLayout('single', persp);
+      persp.shading = 'pbr';
+      timelineVisible = false;
+      app.showTab('material');
+      if (ed.mode === 'bone') ed.setMode('face');
+      ed.tool = 'texpaint';
+      ed.showWire = false;
+      break;
+    case 'tiles':
+      ed.pose = false;
+      vp.setLayout('quad');
+      persp.shading = 'pbr';
+      timelineVisible = false;
+      app.showTab('material');
+      if (ed.mode === 'bone') ed.setMode('face');
+      ed.tool = 'tile';
+      break;
     case 'rig':
       ed.pose = false;
       vp.setLayout('single', persp);
@@ -392,6 +423,9 @@ function setWorkspace(w: Workspace) {
   ed.invalidatePose();
   ed.emit('anim', 'geometry', 'tool', 'selection', 'time');
   uvEditor.draw();
+  if (w === 'paint') { app.paintRefresh(); requestAnimationFrame(() => paintEditor.draw()); }
+  if (w === 'tiles') { app.tilesRefresh(); requestAnimationFrame(() => tileEditor.draw()); }
+  syncTools();
 }
 app.setWorkspace = setWorkspace;
 

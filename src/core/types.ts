@@ -106,6 +106,10 @@ export interface Texture {
   url: string;
   width: number;
   height: number;
+  /** Pixel art: shown and exported with sharp, unblended pixels. */
+  pixelated?: boolean;
+  /** Counts edits made by painting, so views know to reload the image. */
+  rev?: number;
 }
 
 export interface Bone {
