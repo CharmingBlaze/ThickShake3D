@@ -28,6 +28,7 @@ import { packRects, remapIntoAtlas, type PackedRect } from '../src/core/atlas';
 import { bevelEdges, bridgeLoops, checkerFaces, extrudeEdges, insetRegion, circleLoops, connectVerts, dissolveEdges, dissolveFaces, dissolveVerts, edgeLoops, fitPlane, flattenVerts, gridFill, holeLoops, looseParts, pokeFaces, shortestFacePath, shortestPath, solidify, spaceLoops, spin, triFill } from '../src/core/meshtools';
 import { mergeInto } from '../src/io/importer';
 import { applyAllMirrors, clipToMirror, MIRROR_DEFAULTS, mirrorCopies } from '../src/core/mirror';
+import { applyBend, bendSetup, curvePoints, selectionPieces, straightShape, toLocal, toWorld } from '../src/core/bend';
 import { exportMS3D, importMS3D } from '../src/io/ms3d';
 import { parseProject, serializeProject } from '../src/io/project';
 
@@ -2840,3 +2841,80 @@ describe('inset like Blender', () => {
     expect(Math.abs(signedVolume(m, m.faces.keys()))).toBeCloseTo(v0 - (0.5 / 3) * (4 + 1.96 + Math.sqrt(4 * 1.96)), 6);
   });
 });
+
+describe('bend along a curve', () => {
+  const column = () => modelOf(prims.cylinder(0.2, 0.2, 2, 8, 8));
+  const all = (m: Model) => new Set(m.verts.map((_, i) => i));
+
+  it('leaves the shape alone while the curve is straight', () => {
+    const m = column();
+    const before = m.verts.map((v) => [...v.p]);
+    const s = bendSetup(m, all(m));
+    expect(s.axis).toBe(1);
+    applyBend(m, s, straightShape());
+    m.verts.forEach((v, i) => v.p.forEach((x, k) => expect(x).toBeCloseTo(before[i][k], 6)));
+  });
+
+  it('carries the tip to the moved end, turned to follow the curve', () => {
+    const m = column();
+    const s = bendSetup(m, all(m));
+    const sh = straightShape();
+    // Swing the far end round to the side, its handle pointing sideways: a quarter-circle bend.
+    sh.pts[3] = [0.5, 0.5, 0]; sh.pts[2] = [0.5, 0.25, 0];
+    applyBend(m, s, sh);
+    const end = toWorld(s, s.pieces[0], sh.pts[3]);
+    // The top ring sits around the new end, lying across the sideways tangent: flat in the U direction.
+    const top = m.verts.filter((_, i) => s.pieces[0].base[s.pieces[0].verts.indexOf(i)][1] > 0.99);
+    expect(top.length).toBeGreaterThan(0);
+    const c = top.reduce((acc, v) => [acc[0] + v.p[0] / top.length, acc[1] + v.p[1] / top.length, acc[2] + v.p[2] / top.length], [0, 0, 0]);
+    c.forEach((x, k) => expect(x).toBeCloseTo(end[k], 4));
+    const u = s.axis === 1 ? 2 : 0;
+    for (const v of top) expect(Math.abs(v.p[u] - end[u])).toBeLessThan(1e-4);
+    // The bottom stays put.
+    const bottom = m.verts.filter((v) => v.p[1] < -0.99);
+    expect(bottom.length).toBeGreaterThan(0);
+  });
+
+  it('twists and tapers', () => {
+    const m = column();
+    const s = bendSetup(m, all(m));
+    const sh = straightShape(); sh.twist = 180; sh.endScale = 0.5;
+    const tip = m.verts.findIndex((v) => v.p[1] > 0.99 && Math.abs(v.p[0]) > 0.15);
+    const was = [...m.verts[tip].p];
+    applyBend(m, s, sh);
+    expect(m.verts[tip].p[0]).toBeCloseTo(-was[0] * 0.5, 5);
+    expect(m.verts[tip].p[1]).toBeCloseTo(was[1], 5);
+  });
+
+  it('bends each separate piece of the selection with the same curve, scaled to it', () => {
+    const m = modelOf(prims.box(1, 4, 1));
+    const b = prims.box(1, 2, 1);
+    const n = m.verts.length;
+    b.verts.forEach((p) => m.verts.push({ p: [p[0] + 5, p[1], p[2]] } as any));
+    b.faces.forEach((f) => m.faces.push({ ...m.faces[0], v: f.v.map((i: number) => i + n), uv: f.v.map(() => [0, 0]) } as any));
+    expect(selectionPieces(m, all(m)).length).toBe(2);
+    const s = bendSetup(m, all(m), { each: true, axis: 'y' });
+    expect(s.pieces.length).toBe(2);
+    expect(s.pieces.map((p) => p.length).sort()).toEqual([2, 4]);
+    const sh = straightShape(); sh.pts[3] = [1, 0.25, 0];
+    applyBend(m, s, sh);
+    // Each top moves sideways by a quarter of its own length.
+    for (const piece of s.pieces) {
+      const top = piece.verts.filter((_, j) => piece.base[j][1] > piece.origin[1] + piece.length - 1e-6);
+      const shift = top.reduce((acc, v, k) => acc + (m.verts[v].p[2] - piece.base[piece.verts.indexOf(v)][2]), 0) / top.length;
+      expect(shift).toBeCloseTo(piece.length * 0.25, 4);
+    }
+    // Together, they share one curve.
+    expect(bendSetup(m, all(m)).pieces.length).toBe(1);
+  });
+
+  it('turns between world points and a piece\'s own terms', () => {
+    const m = column();
+    const s = bendSetup(m, all(m));
+    const p = s.pieces[0];
+    const w = toWorld(s, p, [0.3, 0.1, -0.2]);
+    toLocal(s, p, w).forEach((x, k) => expect(x).toBeCloseTo([0.3, 0.1, -0.2][k], 9));
+    expect(curvePoints(s, p, straightShape(), 4).length).toBe(5);
+  });
+});
+

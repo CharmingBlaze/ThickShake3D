@@ -9,6 +9,7 @@ import { applyPreset, bakeModelGradient, bakeTextureGradient, blankOrm, evenStop
 import { makeGroup, makeMaterial, newId, uniqueName, type Gradient, type MapSlot, type Material, type MirrorMod, type Model, type V2, type V3 } from '../core/types';
 import { unwrap as unwrapUV, uvOverlaps } from '../core/uv';
 import { MaterialPreview } from '../view/materialView';
+import { BEND_PRESETS } from '../view/bendTool';
 import { colorButton, colorStore, type ColorCallbacks } from './colorPicker';
 import { gradientBar } from './gradientEditor';
 import { openFile } from '../io/platform';
@@ -363,7 +364,7 @@ const MODE_TOOLS: Record<string, { title: string; groups: [string, [string, stri
   vertex: { title: 'Vertex editing', groups: [
     ['Move', [['tool.move', 'Move'], ['tool.rotate', 'Rotate'], ['tool.scale', 'Scale']]],
     ['Join', [['mesh.merge', 'Merge'], ['mesh.weld', 'Weld'], ['mesh.collapse', 'Collapse'], ['mesh.connect', 'Connect'], ['mesh.makeFace', 'Make face'], ['mesh.dissolve', 'Dissolve']]],
-    ['Shape', [['mesh.smoothVerts', 'Relax'], ['loop.flatten', 'Flatten'], ['loop.circle', 'Circle'], ['loop.space', 'Space'], ['loop.curve', 'Curve'], ['mesh.extrudeHere', 'Extrude']]],
+    ['Shape', [['mesh.smoothVerts', 'Relax'], ['tool.bend', 'Bend'], ['loop.flatten', 'Flatten'], ['loop.circle', 'Circle'], ['loop.space', 'Space'], ['loop.curve', 'Curve'], ['mesh.extrudeHere', 'Extrude']]],
     ['Fill', [['mesh.fill', 'Fill'], ['mesh.gridFill', 'Grid fill'], ['mesh.bridge', 'Bridge']]],
     ['Select', [['select.linked', 'Linked'], ['select.grow', 'Grow'], ['select.shrink', 'Shrink'], ['select.shortestPath', 'Path'], ['select.boundary', 'Open edges'], ['select.invert', 'Invert']]],
     ['Remove', [['edit.duplicate', 'Duplicate'], ['edit.delete', 'Delete']]],
@@ -371,7 +372,7 @@ const MODE_TOOLS: Record<string, { title: string; groups: [string, [string, stri
   edge: { title: 'Edge editing', groups: [
     ['Move', [['tool.move', 'Move'], ['tool.rotate', 'Rotate'], ['tool.scale', 'Scale']]],
     ['Cut and add', [['mesh.extrudeHere', 'Extrude'], ['mesh.bevel', 'Bevel'], ['tool.loopcut', 'Loop cut'], ['tool.knife', 'Knife'], ['mesh.bridge', 'Bridge'], ['mesh.spin', 'Spin']]],
-    ['Shape', [['loop.circle', 'Circle'], ['loop.space', 'Space'], ['loop.curve', 'Curve'], ['loop.flatten', 'Flatten'], ['mesh.merge', 'Merge'], ['mesh.dissolve', 'Dissolve']]],
+    ['Shape', [['tool.bend', 'Bend'], ['loop.circle', 'Circle'], ['loop.space', 'Space'], ['loop.curve', 'Curve'], ['loop.flatten', 'Flatten'], ['mesh.merge', 'Merge'], ['mesh.dissolve', 'Dissolve']]],
     ['Fill', [['mesh.fill', 'Fill'], ['mesh.gridFill', 'Grid fill'], ['mesh.makeFace', 'Make face']]],
     ['Seams', [['uv.markSeam', 'Mark seam'], ['uv.clearSeam', 'Clear seam']]],
     ['Select', [['select.loop', 'Loop'], ['select.ring', 'Ring'], ['select.boundary', 'Open edges'], ['select.shortestPath', 'Path'], ['select.grow', 'Grow'], ['select.linked', 'Linked']]],
@@ -380,7 +381,7 @@ const MODE_TOOLS: Record<string, { title: string; groups: [string, [string, stri
   face: { title: 'Face editing', groups: [
     ['Move', [['tool.move', 'Move'], ['tool.rotate', 'Rotate'], ['tool.scale', 'Scale']]],
     ['Add', [['mesh.extrudeHere', 'Extrude'], ['mesh.inset', 'Inset'], ['mesh.bevel', 'Bevel'], ['mesh.poke', 'Poke'], ['mesh.subdivide', 'Subdivide'], ['mesh.solidify', 'Solidify']]],
-    ['Change', [['mesh.dissolve', 'Dissolve'], ['mesh.triangulate', 'Triangulate'], ['mesh.quadify', 'To quads'], ['mesh.mirror', 'Mirror'], ['mesh.bridge', 'Bridge'], ['mesh.merge', 'Merge']]],
+    ['Change', [['tool.bend', 'Bend'], ['mesh.dissolve', 'Dissolve'], ['mesh.triangulate', 'Triangulate'], ['mesh.quadify', 'To quads'], ['mesh.mirror', 'Mirror'], ['mesh.bridge', 'Bridge'], ['mesh.merge', 'Merge']]],
     ['Facing', [['mesh.flip', 'Flip'], ['mesh.fixNormals', 'Outside']]],
     ['Shading', [['mesh.smoothShade', 'Smooth'], ['mesh.flatShade', 'Flat'], ['mesh.autoSmooth', 'Auto']]],
     ['Parts', [['mesh.detach', 'Detach'], ['mesh.regroup', 'Separate'], ['mesh.separateLoose', 'Loose parts'], ['edit.duplicate', 'Duplicate'], ['edit.delete', 'Delete']]],
@@ -388,7 +389,7 @@ const MODE_TOOLS: Record<string, { title: string; groups: [string, [string, stri
   ] },
   group: { title: 'Group editing', groups: [
     ['Move', [['tool.move', 'Move'], ['tool.rotate', 'Rotate'], ['tool.scale', 'Scale']]],
-    ['Parts', [['edit.duplicate', 'Duplicate'], ['mesh.mergeGroups', 'Merge'], ['mesh.separateLoose', 'Loose parts'], ['mesh.mirror', 'Mirror'], ['edit.delete', 'Delete']]],
+    ['Parts', [['edit.duplicate', 'Duplicate'], ['mesh.mergeGroups', 'Merge'], ['mesh.separateLoose', 'Loose parts'], ['mesh.mirror', 'Mirror'], ['tool.bend', 'Bend'], ['edit.delete', 'Delete']]],
     ['Place', [['mesh.centerOrigin', 'Centre'], ['mesh.ground', 'To ground'], ['mesh.rescale', 'Height…']]],
     ['Shading', [['mesh.smoothShade', 'Smooth'], ['mesh.flatShade', 'Flat'], ['mesh.autoSmooth', 'Auto'], ['mesh.fixNormals', 'Outside']]],
     ['Game', [['mesh.generateLods', 'LODs…'], ['mesh.collisionHull', 'Hull'], ['mesh.collisionBox', 'Box']]],
@@ -424,6 +425,46 @@ function modeToolsSection(): HTMLElement | null {
     ...spec.groups.map(([heading, items]) => h('div', { class: 'tool-group' },
       h('span', { class: 'tool-group-label' }, heading),
       h('div', { class: 'tool-chips' }, items.map(chip)))),
+  );
+}
+
+/** The Bend tool's settings, while it's in use. */
+function bendSection(): HTMLElement | null {
+  if (ed.tool !== 'bend') return null;
+  const bt = app.vp.bendTool;
+  const o = bt.opts, s = bt.shape;
+  const seg = <T extends string>(value: T, items: [T, string, string][], pick: (v: T) => void) => h('div', { class: 'seg' },
+    items.map(([v, label, title]) => h('button', { class: `seg-btn${value === v ? ' active' : ''}`, title, 'aria-pressed': String(value === v), onclick: () => pick(v) }, label)));
+  const n = bt.pieces;
+  const sel = ed.selectedVertexSet().size;
+  const field = (label: string, value: number, key: 'twist' | 'startScale' | 'endScale', step: number, digits: number, title: string, min: number, max: number) =>
+    h('div', { class: 'form-row' }, label, numField({ value, step, digits, min, max, title, onChange: (v) => { bt.setShape({ [key]: v }); refreshDock(); } }));
+  return section('Bend',
+    h('p', { class: 'muted small' }, !sel ? 'Select vertices, edges or faces, then drag the curve that appears along them.'
+      : n ? `${n === 1 ? 'One curve' : `${n} curves, one per piece,`} along ${sel.toLocaleString()} vertices. Drag the square ends and round handles.`
+      : 'Select more than one point, spread along a line, to bend.'),
+    h('div', { class: 'form-row' }, 'Pieces', seg(o.each ? 'each' : 'together', [
+      ['together', 'Together', 'The whole selection bends along one curve'],
+      ['each', 'Each piece', 'Every separate part of the selection gets its own copy of the curve, scaled to it: bend one finger and all the selected fingers bend alike'],
+    ], (v) => { bt.setOpts({ each: v === 'each' }); refreshDock(); })),
+    h('div', { class: 'form-row' }, 'Along', seg(o.axis, [
+      ['auto', 'Auto', 'Along the way the selection is longest'],
+      ['x', 'X', 'Along X'], ['y', 'Y', 'Along Y'], ['z', 'Z', 'Along Z'],
+    ], (v) => { bt.setOpts({ axis: v }); refreshDock(); })),
+    field('Twist (degrees)', s.twist, 'twist', 5, 1, 'Turn the far end around the curve, easing in from the start', -3600, 3600),
+    field('Start size', s.startScale, 'startScale', 0.05, 3, 'Thickness at the start end: under 1 thins it, over 1 swells it', 0, 100),
+    field('End size', s.endScale, 'endScale', 0.05, 3, 'Thickness at the far end: 0 brings it to a point, for horns, claws and tails', 0, 100),
+    h('div', { class: 'check-grid' },
+      checkbox('Ends carry handles', o.carryHandles, (v) => { o.carryHandles = v; refreshDock(); }, 'Dragging an end moves its handle with it, keeping the shape of the curve there. Alt does the opposite for one drag'),
+    ),
+    h('div', { class: 'tool-chips' }, Object.values(BEND_PRESETS).map((p) => h('button', {
+      class: 'tool-chip', title: `${p.label}\n${p.title}`, disabled: !n,
+      onclick: () => { bt.applyPreset(p.pts, `Bend: ${p.label}`, app.vp.active.screenAxes()); refreshDock(); },
+    }, h('span', null, p.label)))),
+    h('div', { class: 'btn-row' },
+      button('Straighten', () => { bt.straighten(); refreshDock(); }, { class: 'btn', disabled: !n || bt.straight, title: 'Straighten\nPut the curve back straight, untwisted and even, and the selection with it' }),
+      button('New bend', () => { bt.restart(); refreshDock(); }, { class: 'btn', disabled: !n, title: 'New bend\nKeep the shape as it is and start a fresh, straight curve from here, to bend it further' }),
+    ),
   );
 }
 
@@ -469,6 +510,7 @@ function scenePanel() {
   const selFaces = ed.selectedFaceSet().size;
   return [
     faceToolSection(),
+    bendSection(),
     modeToolsSection(),
     mirrorSection(),
     inspector(),

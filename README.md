@@ -109,6 +109,21 @@ The Face tool builds a mesh point by point, in any view, as Blender's Poly Build
   - *Land on surfaces*, *Snap to vertices*, *Double sided* (sets the mesh's material to show both sides), *Smooth* and *Mirror X* (builds the mirrored face too, sharing points on the centre line).
   - *Flip faces* turns the selected faces (or the last one made) round; *Face outward* turns the whole mesh (or the selection) to face outward.
 
+## Bending along a curve
+
+The **Bend** tool (Shift+W, Mesh > Bend, or Bend in the side panel's mode tools) shapes things organically: tails, horns, necks, fingers, leaves, tentacles.
+
+- Select vertices, edges or faces. A curve appears along them, with square ends and round handles.
+- Drag an end or a handle, and the selection follows the curve smoothly. An end takes its handle with it; Alt drags it alone. Esc or a right click while dragging puts it back. Each drag is one undo step.
+- Several pieces at once: **Together** bends the whole selection along one curve. **Each piece** gives every separate part its own copy of the curve, scaled to it, so bending one selected finger bends them all alike.
+- In the side panel:
+  - **Along** picks the curve's direction: Auto (the selection's longest way), X, Y or Z.
+  - **Twist** turns the far end around the curve.
+  - **Start size** and **End size** taper or swell it; an End size of 0 comes to a point.
+  - **Arc**, **S-curve**, **Hook** and **Bow** are ready-made curves. They bend toward the right of the view you last used.
+  - **Straighten** puts it back. **New bend** keeps the shape and starts a fresh, straight curve, to bend it further.
+- Clicking away from the curve selects as usual, and the curve moves to the new selection.
+
 ## Mirroring
 
 Two kinds, as in Blender:

@@ -19,6 +19,7 @@ import { uniqueName, type Bone, type Q, type RefImage, type V3 } from '../core/t
 import { seamEdges } from '../core/uv';
 import { Pane, VIEW_LABELS, viewBasis, type ViewKind } from './pane';
 import { FaceTool } from './faceTool';
+import { BendTool } from './bendTool';
 import { InsetModal } from './insetTool';
 import { clipToMirror } from '../core/mirror';
 import * as pick from './picking';
@@ -110,6 +111,8 @@ export class Viewports {
   private mouse = { x: 0, y: 0, inside: false };
   /** The Face tool: building polygons point by point, in 3D. */
   private insetModal = new InsetModal(() => this.invalidate());
+  /** Bending the selection along a Bezier curve. */
+  readonly bendTool = new BendTool({ invalidate: () => this.invalidate() });
   private faceTool = new FaceTool({
     scene: () => this.sg,
     invalidate: () => this.invalidate(),
@@ -166,6 +169,7 @@ export class Viewports {
       if (ed.tool !== 'tile') { this.tileTool.cancel(); this.tileTool.clearHover(); }
       if (ed.tool !== 'texpaint') this.texPaint.up();
       if (ed.tool === 'pen') this.pen.hint();
+      if (ed.tool !== 'bend') this.bendTool.cancel(); else { this.bendTool.restart(); this.bendTool.hint(); }
       if (ed.tool !== 'knife' && ed.tool !== 'loopcut') this.oneShotFrom = null;
     });
     ed.on(['anim', 'history', 'topology', 'skeleton'], () => this.clearAnimCaches());
@@ -773,6 +777,7 @@ export class Viewports {
       if (ed.tool === 'extrude' || this.extrudeTool.active) this.extrudeTool.draw(g, p);
       if (ed.tool === 'texpaint') this.texPaint.draw(g, p);
       if (ed.tool === 'tile') this.tileTool.draw(g, p);
+      if (ed.tool === 'bend') this.bendTool.draw(g, p);
       this.drawModal(g, p);
       if (p === this.active && this.layout === 'quad') {
         g.strokeStyle = 'rgba(242,178,76,.55)'; g.lineWidth = 1;
@@ -793,7 +798,7 @@ export class Viewports {
   private updatePreHover(p: Pane | null, x: number, y: number) {
     const prev = this.preHover;
     let next: typeof this.preHover = null;
-    const selecting = ed.tool === 'select' || ed.tool === 'move' || ed.tool === 'rotate' || ed.tool === 'scale';
+    const selecting = ed.tool === 'select' || ed.tool === 'move' || ed.tool === 'rotate' || ed.tool === 'scale' || (ed.tool === 'bend' && !this.bendTool.dragging);
     if (p && selecting && this.mouse.inside && !this.hover) {
       if (ed.mode === 'vertex') {
         const v = pick.pickVertex(p, this.sg, x, y, 10);
@@ -873,6 +878,7 @@ export class Viewports {
     if (ed.tool === 'tile' && tileKey(e)) return true;
     if (ed.tool === 'texpaint' && app.paintKey(e)) return true;
     if (ed.tool === 'face' && this.faceTool.key(e)) return true;
+    if (ed.tool === 'bend' && this.bendTool.key(e)) return true;
     if (ed.tool === 'pen' || (ed.tool === 'blob' && this.pen.active)) return this.pen.key(e);
     if (ed.tool === 'knife') {
       if (this.knife.key(e)) return true;
@@ -1454,6 +1460,7 @@ export class Viewports {
       // A right click while extruding puts everything back, as in Blender.
       if (e.button === 2 && this.extrudeTool.active) { this.extrudeTool.cancel(); return; }
       if (e.button === 2 && this.insetModal.active) { this.insetModal.cancel(); return; }
+      if (e.button === 2 && this.bendTool.dragging) { this.bendTool.cancel(); return; }
       if (e.button === 1) { this.drag = { kind: 'pan', pane: p, x, y }; return; }
       if (e.button === 2 && (this.drag?.kind === 'transform' || this.drag?.kind === 'ik' || this.drag?.kind === 'sculpt')) { this.cancelDrag(); return; }
       if (e.altKey && (e.button === 0 || e.button === 2)) {
@@ -1469,7 +1476,7 @@ export class Viewports {
 
     // Move and release are tracked on the window so a drag survives leaving the viewport.
     window.addEventListener('pointermove', (e) => {
-      if (!this.drag && !this.loopTool.sliding && e.target !== ov) return;
+      if (!this.drag && !this.loopTool.sliding && !this.bendTool.dragging && e.target !== ov) return;
       const { x, y } = this.local(e);
       this.mouse = { x, y, inside: e.target === ov };
       const d = this.drag;
@@ -1482,6 +1489,8 @@ export class Viewports {
         if (this.insetModal.active && p) { this.insetModal.move(p, x, y, e); return; }
         if (ed.tool === 'face' && p) { this.faceTool.move(p, x, y, e); return; }
         if (ed.tool === 'tile' && p) { this.tileTool.move(p, x, y); return; }
+        if (ed.tool === 'bend' && this.bendTool.dragging) { this.bendTool.move(p ?? this.active, x, y, e); return; }
+        if (ed.tool === 'bend' && p) this.bendTool.move(p, x, y, e);
         if (ed.tool === 'loopcut') {
           const at = p ?? this.active;
           if (at) this.loopTool.move(at, x, y, e);
@@ -1520,7 +1529,7 @@ export class Viewports {
     ov.addEventListener('pointerleave', () => { this.mouse.inside = false; this.extrudeTool.clearHover(); this.preHover = null; this.invalidate(); });
 
     const finish = (e: PointerEvent) => {
-      if (e.button === 0) { this.knife.up(); this.loopTool.up(); this.pen.up(); this.extrudeTool.up(); this.texPaint.up(); this.tileTool.up(); }
+      if (e.button === 0) { this.knife.up(); this.loopTool.up(); this.pen.up(); this.extrudeTool.up(); this.texPaint.up(); this.tileTool.up(); this.bendTool.up(); }
       const d = this.drag;
       if (!d) return;
       this.drag = null;
@@ -1625,6 +1634,7 @@ export class Viewports {
       case 'tile': this.tileTool.down(p, x, y, e); return;
       case 'vertex': this.placeVertex(p, x, y); return;
       case 'face': this.faceTool.down(p, x, y, e); return;
+      case 'bend': if (!this.bendTool.down(p, x, y, e)) this.startSelect(p, x, y, e); return;
       case 'joint': this.placeJoint(p, x, y); return;
       case 'ik': this.startIK(p, x, y); return;
       case 'blob':
