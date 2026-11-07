@@ -112,8 +112,9 @@ app.whenReady().then(async () => {
     check('Rotate view ring changes the face', before !== (await js(`return JSON.stringify(ed.model.verts.map(v=>v.p))`)));
     await js(`ed.undo();ed.undo();`);
 
-    // --- Extrude with the tool and real drag.
-    await js(`T.runCommand('tool.extrude')`);
+    // --- Extrude by pulling a face with the tool (Push/Pull) and a real drag. Picked without T, so it doesn't
+    // start extruding the selection at once.
+    await js(`ed.tool='extrude';ed.emit('tool')`);
     await sleep(100);
     const f0 = (await count()).f;
     cen = await screen(0, 0.6, 0);
@@ -125,6 +126,13 @@ app.whenReady().then(async () => {
     await shot('04-extrude');
     const closed = await js(`const m=ed.model;const seen={};for(const f of m.faces)f.v.forEach((a,i)=>{const b=f.v[(i+1)%f.v.length];const k=a<b?a+'_'+b:b+'_'+a;seen[k]=(seen[k]||0)+1});return Object.values(seen).every(x=>x===2)`);
     check('Extruded mesh is still watertight', closed);
+    // Pushing a face in keeps it closed and its walls facing out.
+    const fPush = (await count()).f;
+    const side = await screen(0, 0.3, 0.5);
+    await drag(side, { x: side.x, y: side.y + 25 });
+    check('Pushing a face in adds walls too', (await count()).f === fPush + 4);
+    check('Pushed-in mesh is still watertight', await js(`const m=ed.model;const seen={};for(const f of m.faces)f.v.forEach((a,i)=>{const b=f.v[(i+1)%f.v.length];const k=a<b?a+'_'+b:b+'_'+a;seen[k]=(seen[k]||0)+1});return Object.values(seen).every(x=>x===2)`));
+    await js(`ed.undo()`);
 
     // --- Adjustable op: inset then change its amount.
     await js(`T.runCommand('tool.select');T.runCommand('mesh.inset')`);
@@ -934,6 +942,9 @@ app.whenReady().then(async () => {
     await sleep(150);
     const sb = await pieceBox('Shape');
     check('Drawing around an outline inflates a solid of that size', sb && sb.r[0][1] - sb.r[0][0] > 0.2 && sb.r[2][1] - sb.r[2][0] > 0.05 && sb.r[1][1] - sb.r[1][0] < sb.r[0][1] - sb.r[0][0], JSON.stringify(sb));
+    check('The drawn shape waits to be shaped with its rings, all in quads', await js(`return vp.pen.active&&ed.lastOp?.label==='Draw shape'&&ed.model.faces.filter(f=>f.g===ed.activeGroup).every(f=>f.v.length===4)`));
+    await js(`vp.pen.finish()`);
+    check('Finishing keeps the shape', await js(`return !vp.pen.active&&!!ed.model.groups.find(g=>g.name.startsWith('Shape'))`));
     await shot('13u-organic-pieces');
 
     // Sculpt: grab, inflate and smooth with the real mouse, all as single undo steps.
@@ -1122,7 +1133,7 @@ app.whenReady().then(async () => {
     await click(armP);
     check('A click selects a whole piece', await js(`const fs=ed.model.faces.filter(f=>f.g===${armP.g}).length;return ed.selFaces.size===fs&&ed.activeGroup===${armP.g}`));
     await sleep(120);
-    check('The panel shows colours and the measurement overlay is on', await js(`return !!document.querySelector('.block-colors')&&ed.blockDims`));
+    check('The panel shows colours and the measurement overlay starts off', await js(`return !!document.querySelector('.block-colors')&&!ed.blockDims`));
     await shot('13p-blockout');
 
     // Colour, duplicate, array, join, drop, leave.

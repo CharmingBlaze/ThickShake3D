@@ -25,7 +25,7 @@ import { Viewports } from './view/viewports';
 const MENUS: [string, (string | null)[]][] = [
   ['File', ['file.new', 'file.open', null, 'file.save', 'file.saveAs', null, 'file.import', 'file.export', null, 'file.sample', ...(native ? [null, 'file.quit'] : [])]],
   ['Edit', ['edit.undo', 'edit.redo', null, 'edit.duplicate', 'edit.delete', null, 'select.all', 'select.none', 'select.invert', 'select.grow', 'select.shrink', 'select.linked', null, 'select.loop', 'select.ring', 'select.boundary', 'select.similarNormal']],
-  ['Create', ['tool.box', 'tool.sphere', 'tool.geosphere', 'tool.cylinder', 'tool.cone', 'tool.limb', 'tool.stroke', 'tool.blob', 'tool.lathe', 'tool.capsule', 'tool.tapered', 'tool.pyramid', 'tool.wedge', 'tool.stairs', 'tool.doorway', 'tool.plane', 'tool.torus', null, 'create.lowPoly', 'create.onSurface', null, 'tool.vertex', 'tool.face', 'tool.joint']],
+  ['Create', ['tool.box', 'tool.sphere', 'tool.geosphere', 'tool.cylinder', 'tool.cone', 'tool.limb', 'tool.stroke', 'tool.blob', 'tool.pen', 'tool.lathe', 'tool.capsule', 'tool.tapered', 'tool.pyramid', 'tool.wedge', 'tool.stairs', 'tool.doorway', 'tool.plane', 'tool.torus', null, 'create.lowPoly', 'create.onSurface', null, 'tool.vertex', 'tool.face', 'tool.joint']],
   ['Mesh', ['tool.extrude', 'mesh.inset', 'tool.loopcut', 'tool.knife', 'mesh.subdivide', 'mesh.makeFace', 'mesh.fillHoles', null, 'mesh.weld', 'mesh.collapse', 'mesh.weldAll', 'mesh.smoothVerts', null, 'mesh.triangulate', 'mesh.quadify', 'mesh.mirror', null, 'mesh.detach', 'mesh.regroup', 'mesh.mergeGroups', null, 'mesh.flip', 'mesh.fixNormals', 'mesh.smoothShade', 'mesh.flatShade', 'mesh.autoSmooth', null, 'mesh.centerOrigin', 'mesh.ground', 'mesh.rescale']],
   ['UV', ['uv.unwrap', 'uv.smart', null, 'uv.box', 'uv.planarView', 'uv.cylinder', 'uv.sphere', null, 'uv.pack', 'uv.minimize', 'uv.average', 'uv.fit', 'uv.density', null, 'uv.markSeam', 'uv.clearSeam', 'uv.seamsFromIslands', 'uv.clearAllSeams', null, 'uv.exportLayout']],
   ['Rig', ['rig.humanoid', 'tool.joint', 'rig.split', 'rig.mirrorJoints', null, 'rig.autoWeightsAll', 'rig.autoWeights', 'rig.assign', 'rig.clear', null, 'tool.paint', 'rig.smooth', 'rig.mirrorWeights', 'rig.prune', 'rig.selectUnweighted', null, 'rig.testPose', 'rig.resetPose']],
@@ -145,23 +145,35 @@ root.append(titlebar, mainRow, statusbar);
 const lastOpHost = h('div', { class: 'lastop-host' });
 stageHost.appendChild(lastOpHost);
 
-// Welcome overlay
+// Welcome overlay: shown once, when the app starts on an empty scene. Anything you do closes it for the session.
 const welcome = h('div', { class: 'welcome' });
 stageHost.appendChild(welcome);
+let welcomeOpen = true;
+function closeWelcome() {
+  if (!welcomeOpen) return;
+  welcomeOpen = false;
+  welcome.style.display = 'none';
+}
+// A click in the views, or Esc, means you'd rather get on with it.
+stageHost.addEventListener('pointerdown', (e) => { if (!(e.target as HTMLElement).closest('.welcome-card')) closeWelcome(); }, true);
+window.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeWelcome(); });
 
 function renderWelcome() {
-  const show = !ed.model.faces.length && !ed.model.verts.length && !ed.model.bones.length && !ed.model.refs?.length && ed.workspace !== 'block';
-  welcome.style.display = show ? 'flex' : 'none';
-  if (!show) return;
+  const empty = !ed.model.faces.length && !ed.model.verts.length && !ed.model.bones.length && !ed.model.refs?.length;
+  // Once there's something in the scene, it's done its job.
+  if (!empty || ed.workspace === 'block') closeWelcome();
+  welcome.style.display = welcomeOpen ? 'flex' : 'none';
+  if (!welcomeOpen) return;
   const recents = recentFiles();
   renderInto(welcome, () => h('div', { class: 'welcome-card' },
     h('img', { src: './icon.png', width: 64, height: 64, alt: '' }),
     h('h1', null, 'ThickShake'),
     h('p', { class: 'muted' }, 'Model, unwrap, rig, animate and ship game assets.'),
     h('div', { class: 'welcome-actions' },
-      button('Start with a box', () => runCommand('create.box'), { class: 'btn btn-primary' }),
-      button('Open…', () => runCommand('file.open')),
-      button('Demo milkshake', () => runCommand('file.sample')),
+      button('Blank', () => closeWelcome(), { class: 'btn btn-primary', title: 'Start with an empty scene' }),
+      button('Start with a box', () => { closeWelcome(); runCommand('create.box'); }),
+      button('Open…', () => { closeWelcome(); runCommand('file.open'); }),
+      button('Demo milkshake', () => { closeWelcome(); runCommand('file.sample'); }),
     ),
     native && recents.length ? h('div', { class: 'recents' }, h('h4', null, 'Recent'), recents.slice(0, 5).map((p) => h('button', {
       class: 'recent-item', title: p,

@@ -183,7 +183,7 @@ export function loopCuts(m: Model, edge: string, o: LoopOptions = {}): CutResult
     const top = [{ v: a, uv: ua, pin: f.pin?.[at(0)] ?? false }, ...along(keyTop, a).map((x) => ({ v: x.v, uv: lerpUV(ua, ub, x.t), pin: false })), { v: b, uv: ub, pin: f.pin?.[at(1)] ?? false }];
     const bot = [{ v: d, uv: ud, pin: f.pin?.[at(3)] ?? false }, ...along(keyBot, d).map((x) => ({ v: x.v, uv: lerpUV(ud, uc, x.t), pin: false })), { v: c, uv: uc, pin: f.pin?.[at(2)] ?? false }];
     for (let i = 0; i + 1 < top.length; i++) {
-      const piece: Face = { v: [top[i].v, top[i + 1].v, bot[i + 1].v, bot[i].v], uv: [top[i].uv, top[i + 1].uv, bot[i + 1].uv, bot[i].uv], g: f.g, s: f.s };
+      const piece: Face = { v: [top[i].v, top[i + 1].v, bot[i + 1].v, bot[i].v], uv: [top[i].uv, top[i + 1].uv, bot[i + 1].uv, bot[i].uv].map((u) => [u[0], u[1]] as V2), g: f.g, s: f.s };
       if (f.seam) piece.seam = [f.seam[at(0)] ?? false, i + 2 === top.length ? f.seam[at(1)] ?? false : false, f.seam[at(2)] ?? false, i === 0 ? f.seam[at(3)] ?? false : false];
       if (f.pin) piece.pin = [top[i].pin, top[i + 1].pin, bot[i + 1].pin, bot[i].pin];
       created.push(piece);
@@ -523,7 +523,7 @@ function splitFace(m: Model, fi: number, chords: [string, string][], plan: Knife
 
   const seamOf = (a: number, b: number) => a < ringCount && b < ringCount && (a + 1) % ringCount === b && (f.seam?.[a] ?? false);
   const faces: Face[] = regions.map((l) => {
-    const face: Face = { v: l.map((i) => nodes[i].vert!), uv: l.map((i) => uvOf.get(i)!), g: f.g, s: f.s };
+    const face: Face = { v: l.map((i) => nodes[i].vert!), uv: l.map((i) => { const u = uvOf.get(i)!; return [u[0], u[1]] as V2; }), g: f.g, s: f.s };
     if (f.seam) face.seam = l.map((a, i) => seamOf(a, l[(i + 1) % l.length]));
     if (f.pin) face.pin = l.map((a) => pinOf.get(a)!);
     return face;

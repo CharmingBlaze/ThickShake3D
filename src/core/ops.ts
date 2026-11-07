@@ -185,18 +185,33 @@ export function collapse(m: Model, verts: Set<number>) {
 function applyMerge(m: Model, target: Map<number, number>): number {
   if (!target.size) return 0;
   for (const f of m.faces) {
-    const v: number[] = [], uv: V2[] = [];
+    const v: number[] = [], uv: V2[] = [], seam: boolean[] = [], pin: boolean[] = [];
     for (let i = 0; i < f.v.length; i++) {
       const nv = target.get(f.v[i]) ?? f.v[i];
-      if (v.length && v[v.length - 1] === nv) continue;
-      v.push(nv); uv.push(f.uv[i]);
+      // A corner merged into the one before: the edge leaving it now leaves the kept corner.
+      if (v.length && v[v.length - 1] === nv) { seam[seam.length - 1] = f.seam?.[i] ?? false; pin[pin.length - 1] ||= f.pin?.[i] ?? false; continue; }
+      v.push(nv); uv.push(f.uv[i]); seam.push(f.seam?.[i] ?? false); pin.push(f.pin?.[i] ?? false);
     }
-    if (v.length > 1 && v[0] === v[v.length - 1]) { v.pop(); uv.pop(); }
+    if (v.length > 1 && v[0] === v[v.length - 1]) { v.pop(); uv.pop(); seam.pop(); pin[0] ||= pin.pop()!; }
     f.v = v; f.uv = uv;
+    if (f.seam) f.seam = seam;
+    if (f.pin) f.pin = pin;
   }
   m.faces = m.faces.filter((f) => new Set(f.v).size >= 3);
   removeVertsRaw(m, new Set(target.keys()));
   return target.size;
+}
+
+/** A fresh copy of a UV. Corners never share one array, since UV tools edit them in place. */
+const cuv = (u: V2): V2 => [u[0], u[1]];
+/** Whether the directed edge a→b of a face is marked as a UV seam. */
+function edgeSeam(f: Face, a: number, b: number): boolean {
+  const i = f.v.indexOf(a);
+  return i >= 0 && f.v[(i + 1) % f.v.length] === b && !!f.seam?.[i];
+}
+function cornerPin(f: Face, v: number): boolean {
+  const i = f.v.indexOf(v);
+  return i >= 0 && !!f.pin?.[i];
 }
 
 // ---------- normals ----------
@@ -290,9 +305,20 @@ export function extrudeFaces(m: Model, faces: Set<number>): { top: number[]; nor
     for (let i = 0; i < f.v.length; i++) inRegion.add(`${f.v[i]}>${f.v[(i + 1) % f.v.length]}`);
   });
   // Boundary = directed edge with no opposite inside the region.
+  // Only vertices on the boundary or shared with faces outside the region need a copy;
+  // the rest move with the region, so duplicating them would leave the originals loose.
+  const mustCopy = new Set<number>();
+  m.faces.forEach((f, fi) => {
+    for (let i = 0; i < f.v.length; i++) {
+      const a = f.v[i], b = f.v[(i + 1) % f.v.length];
+      if (!faces.has(fi)) mustCopy.add(a);
+      else if (!inRegion.has(`${b}>${a}`)) { mustCopy.add(a); mustCopy.add(b); }
+    }
+  });
   const dupe = new Map<number, number>();
   const dup = (v: number) => {
     let n = dupe.get(v);
+    if (n === undefined && !mustCopy.has(v)) { dupe.set(v, v); return v; }
     if (n === undefined) {
       n = m.verts.length;
       const src = m.verts[v];
@@ -342,9 +368,15 @@ export function insetFaces(m: Model, faces: Set<number>, amount: number) {
     const n = f.v.length;
     for (let i = 0; i < n; i++) {
       const j = (i + 1) % n;
-      created.push({ v: [f.v[i], f.v[j], inner[j], inner[i]], uv: [f.uv[i], f.uv[j], innerUV[j], innerUV[i]], g: f.g, s: f.s });
+      const rim: Face = { v: [f.v[i], f.v[j], inner[j], inner[i]], uv: [cuv(f.uv[i]), cuv(f.uv[j]), cuv(innerUV[j]), cuv(innerUV[i])], g: f.g, s: f.s };
+      // The outer edge keeps its seam and the outer corners their pins; the new edges have neither.
+      if (f.seam) rim.seam = [f.seam[i] ?? false, false, false, false];
+      if (f.pin) rim.pin = [f.pin[i] ?? false, f.pin[j] ?? false, false, false];
+      created.push(rim);
     }
     f.v = inner; f.uv = innerUV;
+    if (f.seam) f.seam = inner.map(() => false);
+    if (f.pin) f.pin = inner.map(() => false);
   });
   m.faces.push(...created);
 }
@@ -385,14 +417,17 @@ export function subdivide(m: Model, faces: Set<number>, smooth: boolean) {
   // A partial selection also splits neighbouring faces' shared edges so no T-junctions remain.
   m.faces.forEach((f, fi) => {
     if (faces.has(fi)) return;
-    const v: number[] = [], uv: V2[] = [];
+    const v: number[] = [], uv: V2[] = [], seam: boolean[] = [], pin: boolean[] = [];
     for (let i = 0; i < f.v.length; i++) {
       const j = (i + 1) % f.v.length;
-      v.push(f.v[i]); uv.push(f.uv[i]);
+      const s = f.seam?.[i] ?? false;
+      v.push(f.v[i]); uv.push(f.uv[i]); seam.push(s); pin.push(f.pin?.[i] ?? false);
       const mid = edgePoint.get(edgeKey(f.v[i], f.v[j]));
-      if (mid !== undefined) { v.push(mid); uv.push(lerpUV(f.uv[i], f.uv[j], 0.5)); }
+      if (mid !== undefined) { v.push(mid); uv.push(lerpUV(f.uv[i], f.uv[j], 0.5)); seam.push(s); pin.push(false); }
     }
     f.v = v; f.uv = uv;
+    if (f.seam) f.seam = seam;
+    if (f.pin) f.pin = pin;
   });
 
   if (smooth) {
@@ -407,7 +442,8 @@ export function subdivide(m: Model, faces: Set<number>, smooth: boolean) {
     vertFaces.forEach((fl, v) => {
       const es = vertEdges.get(v) ?? [];
       const boundary = es.filter((k) => (ef.get(k) ?? []).filter((x) => faces.has(x)).length < 2 || (ef.get(k) ?? []).length !== 2);
-      if (!all && boundary.length && fl.length < es.length) { /* partial-region rim stays put */ }
+      // The rim of a partial region is shared with unselected faces, so it stays put.
+      if (!all && boundary.length && fl.length < es.length) return;
       if (boundary.length >= 2) {
         const [e1, e2] = boundary;
         const other = (k: string) => { const [a, b] = parseEdge(k); return a === v ? b : a; };
@@ -434,11 +470,15 @@ export function subdivide(m: Model, faces: Set<number>, smooth: boolean) {
     f.uv.forEach((u) => { cu[0] += u[0] / n; cu[1] += u[1] / n; });
     for (let i = 0; i < n; i++) {
       const prev = (i + n - 1) % n, next = (i + 1) % n;
-      created.push({
+      const q: Face = {
         v: [f.v[i], edgePoint.get(edgeKey(f.v[i], f.v[next]))!, c, edgePoint.get(edgeKey(f.v[prev], f.v[i]))!],
-        uv: [f.uv[i], lerpUV(f.uv[i], f.uv[next], 0.5), cu, lerpUV(f.uv[prev], f.uv[i], 0.5)],
+        uv: [cuv(f.uv[i]), lerpUV(f.uv[i], f.uv[next], 0.5), cuv(cu), lerpUV(f.uv[prev], f.uv[i], 0.5)],
         g: f.g, s: f.s,
-      });
+      };
+      // Halves of the original edges keep their seams; the edges to the centre are new.
+      if (f.seam) q.seam = [f.seam[i] ?? false, false, false, f.seam[prev] ?? false];
+      if (f.pin) q.pin = [f.pin[i] ?? false, false, false, false];
+      created.push(q);
     }
   });
   m.faces = keep.concat(created);
@@ -452,12 +492,14 @@ export function triangulateFaces(m: Model, faces: Set<number>) {
   m.faces.forEach((f, fi) => {
     if (!faces.has(fi) || f.v.length === 3) { keep.push(f); return; }
     const t = triangulateFace(m, f);
+    const n = f.v.length;
     for (let i = 0; i < t.length; i += 3) {
-      created.push({
-        v: [f.v[t[i]], f.v[t[i + 1]], f.v[t[i + 2]]],
-        uv: [f.uv[t[i]], f.uv[t[i + 1]], f.uv[t[i + 2]]],
-        g: f.g, s: f.s,
-      });
+      const c = [t[i], t[i + 1], t[i + 2]];
+      const tri: Face = { v: c.map((k) => f.v[k]), uv: c.map((k) => cuv(f.uv[k])), g: f.g, s: f.s };
+      // A triangle side that runs along the original outline keeps that edge's seam.
+      if (f.seam) tri.seam = c.map((k, j) => c[(j + 1) % 3] === (k + 1) % n && (f.seam![k] ?? false));
+      if (f.pin) tri.pin = c.map((k) => f.pin![k] ?? false);
+      created.push(tri);
     }
   });
   m.faces = keep.concat(created);
@@ -488,8 +530,11 @@ export function quadify(m: Model, faces: Set<number>, maxAngleDeg = 10): number 
     const gi = g.v.findIndex((x) => x !== a && x !== b);
     const d = g.v[gi];
     if (!g.v.includes(a) || !g.v.includes(b)) return;
-    const uv = (face: Face, v: number) => face.uv[face.v.indexOf(v)];
-    created.push({ v: [c, a, d, b], uv: [uv(f, c), uv(f, a), uv(g, d), uv(f, b)], g: f.g, s: f.s });
+    const uv = (face: Face, v: number) => cuv(face.uv[face.v.indexOf(v)]);
+    const q: Face = { v: [c, a, d, b], uv: [uv(f, c), uv(f, a), uv(g, d), uv(f, b)], g: f.g, s: f.s };
+    if (f.seam || g.seam) q.seam = [edgeSeam(f, c, a), edgeSeam(g, a, d), edgeSeam(g, d, b), edgeSeam(f, b, c)];
+    if (f.pin || g.pin) q.pin = [cornerPin(f, c), cornerPin(f, a), cornerPin(g, d), cornerPin(f, b)];
+    created.push(q);
     used.add(fi); used.add(best); remove.add(fi); remove.add(best);
   });
   m.faces = m.faces.filter((_, i) => !remove.has(i)).concat(created);
@@ -572,8 +617,11 @@ export function mirrorFaces(m: Model, faces: Set<number>, axis: 0 | 1 | 2, weldS
   verts.forEach((v) => { m.verts[v].p[axis] *= -1; });
   flipFaces(m, created);
   if (weldSeam) {
+    // Only the mirrored piece and its source: other meshes on the plane keep their split vertices.
     const seam = new Set<number>();
-    m.verts.forEach((v, i) => { if (Math.abs(v.p[axis]) < 1e-4) { v.p[axis] = 0; seam.add(i); } });
+    const consider = new Set(verts);
+    faces.forEach((fi) => m.faces[fi].v.forEach((v) => consider.add(v)));
+    consider.forEach((i) => { const v = m.verts[i]; if (Math.abs(v.p[axis]) < 1e-4) { v.p[axis] = 0; seam.add(i); } });
     weld(m, seam, 1e-4);
   }
 }

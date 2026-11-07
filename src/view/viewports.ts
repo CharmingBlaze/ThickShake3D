@@ -1,14 +1,16 @@
 // The stage: layout of viewport panes, the render loop, the 2D overlay, and all pointer input.
 import * as THREE from 'three';
-import { ed, type SelMode, type ToolId } from '../core/editor';
+import { ed, type OpParam, type SelMode, type ToolId } from '../core/editor';
 import { KnifeTool, LoopTool, type CutHost } from './cutTools';
+import { depthKey, PenTool, widthKey, type PenBuild } from './penTool';
+import { ExtrudeTool } from './extrudeTool';
 import { bounds, dist as dist3, edgeKey, faceNormal, norm, parseEdge } from '../core/geom';
 import * as ops from '../core/ops';
 import * as prims from '../core/primitives';
 import { ensureTrack, mirrorMaps, paintWeight, qAxisAngle, qConj, qMul, qNorm, qRotate, sampleTrack, setKey, smoothVertexWeight, vertexNeighbors } from '../core/skeleton';
 import { ikChain, solveIK } from '../core/anim';
 import { limbFrame, mirrorPiece, scaleFigure } from '../core/blockout';
-import { lathe, partPrim, PARTS, silhouette, tube } from '../core/organic';
+import { inflateParts, lathe, partPrim, PARTS, tube } from '../core/organic';
 import { evalPose, keyFrames, skinInto } from '../core/skeleton';
 import { uniqueName, type Bone, type Q, type RefImage, type V3 } from '../core/types';
 import { seamEdges } from '../core/uv';
@@ -28,7 +30,6 @@ type Drag =
   | { kind: 'orbit' | 'bank' | 'pan' | 'panGround' | 'panVertical' | 'zoom'; pane: Pane; x: number; y: number }
   | { kind: 'box'; pane: Pane; x0: number; y0: number; x1: number; y1: number; add: boolean; sub: boolean }
   | { kind: 'transform'; pane: Pane; handle: Handle; x0: number; y0: number; mode: 'move' | 'rotate' | 'scale'; center: THREE.Vector3; orig: Map<number, V3>; mirror: Map<number, number>; boneOrig?: Map<number, V3>; boneMirror?: Map<number, number>; poseBase?: PoseBase; startAngle?: number }
-  | { kind: 'extrude'; pane: Pane; x0: number; y0: number; verts: Map<number, V3>; normals: Map<number, V3>; center: THREE.Vector3; axis: THREE.Vector3 }
   | { kind: 'prim'; pane: Pane; s: PrimSession; x0: number; y0: number; made: boolean }
   | { kind: 'primResize'; pane: Pane; s: PrimSession; x0: number; y0: number; min0: Vec3; max0: Vec3; move: boolean; made: boolean; axes: { i: number; sx: number; sy: number; side: -1 | 0 | 1 }[] }
   | { kind: 'freehand'; pane: Pane; tool: 'stroke' | 'blob' | 'lathe'; origin: THREE.Vector3; points: THREE.Vector3[]; screen: [number, number][] }
@@ -86,6 +87,15 @@ export class Viewports {
   private cutHost: CutHost = { sg: null as unknown as SceneGraph, invalidate: () => this.invalidate(), finishOneShot: () => this.finishOneShot() };
   readonly knife = new KnifeTool(this.cutHost);
   readonly loopTool = new LoopTool(this.cutHost);
+  readonly pen = ((vp: Viewports) => new PenTool({
+    get sg() { return vp.sg; },
+    invalidate: () => vp.invalidate(),
+    startPiece: (build) => vp.startPenPiece(build),
+  }))(this);
+  readonly extrudeTool = ((vp: Viewports) => new ExtrudeTool({
+    get sg() { return vp.sg; },
+    invalidate: () => vp.invalidate(),
+  }))(this);
   private oneShotFrom: ToolId | null = null;
   private hover: Handle | null = null;
   private mouse = { x: 0, y: 0, inside: false };
@@ -128,6 +138,11 @@ export class Viewports {
       if (this.session && ed.tool !== this.session.tool) this.dropPrim();
       if (ed.tool !== 'knife') { this.knife.reset(); this.knife.selectedOnly = false; } else this.knife.hint();
       if (ed.tool !== 'loopcut') { this.loopTool.abort(); this.loopTool.clearHover(); } else this.loopTool.hint();
+      // The shape being drawn or shaped belongs to Pen Shape or Draw Shape; any other tool lets it go.
+      if (this.pen.active && ed.tool !== this.pen.owner) this.pen.reset();
+      this.cancelModal();
+      if (ed.tool !== 'extrude') { this.extrudeTool.cancel(); this.extrudeTool.clearHover(); } else if (!this.extrudeTool.active) this.extrudeTool.hint();
+      if (ed.tool === 'pen') this.pen.hint();
       if (ed.tool !== 'knife' && ed.tool !== 'loopcut') this.oneShotFrom = null;
     });
     ed.on(['anim', 'history', 'topology', 'skeleton'], () => this.clearAnimCaches());
@@ -138,7 +153,11 @@ export class Viewports {
     });
     // The shape changed, so the loop being previewed may no longer be right.
     ed.on(['history', 'topology'], () => this.loopTool.clearHover());
-    window.addEventListener('keyup', (e) => { if (ed.tool === 'knife' && (e.key === 'Control' || e.key === 'Shift')) this.knife.modifiers(e); });
+    window.addEventListener('keyup', (e) => {
+      if (ed.tool === 'knife' && (e.key === 'Control' || e.key === 'Shift')) this.knife.modifiers(e);
+      if (this.extrudeTool.active) this.extrudeTool.keyUp(e);
+      if (this.modal && (e.key === 'Shift' || e.key === 'Control')) this.updateModal({ ...this.modal.at, shift: e.shiftKey, ctrl: e.ctrlKey });
+    });
     requestAnimationFrame(this.loop);
   }
 
@@ -199,6 +218,251 @@ export class Viewports {
     p.panBy(dx * step, dy * step);
     this.linkViews(p);
     this.invalidate();
+  }
+
+  private lastNudge: { at: number; depth: number } | null = null;
+
+  /**
+   * Move the selection one step with the arrow keys, along the world axis that points most nearly
+   * the way the arrow does in the view under the mouse. A step is a tenth of a grid square, or the
+   * snap step when snapping is on; `fine` makes it a tenth of that. Returns false when there's nothing to move.
+   */
+  nudgeKey(dx: number, dy: number, fine: boolean): boolean {
+    if (this.drag || ed.selectionCount() === 0) return false;
+    // In the UV workspace the arrows only reach the 3D view while the mouse is over it.
+    if (ed.workspace === 'uv' && !this.mouse.inside) return false;
+    const center = this.gizmoCenter();
+    if (!center) return false;
+    const p = this.keyPane();
+    const { right, up } = p.screenAxes();
+    const dir = right.clone().multiplyScalar(dx).addScaledVector(up, dy);
+    const size = [Math.abs(dir.x), Math.abs(dir.y), Math.abs(dir.z)];
+    const axis = size.indexOf(Math.max(...size));
+    const step = (ed.snap ? ed.snapStep : p.gridScale() * 0.1) * (fine ? 0.1 : 1);
+    const move = new THREE.Vector3();
+    move.setComponent(axis, Math.sign(dir.getComponent(axis)) * step);
+
+    const depth = ed.historyDepth;
+    const s = p.project(center.x, center.y, center.z);
+    this.startTransform(p, { type: 'center', axis: 0 }, s.x, s.y, 'move');
+    const d = this.drag as Drag | null;
+    if (!d || d.kind !== 'transform') return true;
+    this.applyTransform(d, s.x, s.y, false, move);
+    this.drag = null;
+    ed.commit();
+    // Presses in quick succession, with nothing else in between, undo as one move.
+    const now = performance.now();
+    const last = this.lastNudge;
+    if (last && now - last.at < 1500 && last.depth === depth && ed.historyDepth === depth + 1) ed.squashLast();
+    this.lastNudge = { at: now, depth: ed.historyDepth };
+    status(`Nudge ${'XYZ'[axis]} ${move.getComponent(axis) > 0 ? '+' : ''}${move.getComponent(axis).toPrecision(3)}`);
+    ed.emitAll();
+    this.invalidate();
+    return true;
+  }
+
+  // ---------- G, R and S: move, rotate and scale the way Blender does ----------
+  /**
+   * Press G, R or S over a view and the selection follows the mouse: G moves it in the view's plane, R turns it
+   * as the mouse circles its centre, S scales it by how far the mouse is from the centre. X, Y or Z locks to that
+   * axis, Shift with it to the other two; type a number for an exact distance, angle or factor. Click or Enter
+   * keeps it, Esc or a right click puts it back.
+   */
+  private modal: {
+    mode: 'move' | 'rotate' | 'scale';
+    d: Extract<Drag, { kind: 'transform' }>;
+    /** The selection's centre on screen, and where the mouse started. */
+    cx: number; cy: number; x0: number; y0: number; d0: number;
+    /** Rotation: the mouse's last angle around the centre, and how far it has turned in all. */
+    lastAngle: number; turned: number;
+    lock: { axis: 0 | 1 | 2; plane: boolean } | null;
+    typed: string;
+    at: { x: number; y: number; shift: boolean; ctrl: boolean };
+    /** Shift's fine control works from where the mouse was when Shift went down. */
+    fine: { x: number; y: number; turned: number } | null;
+  } | null = null;
+
+  get isModal() { return this.modal !== null; }
+
+  startModalHere(mode: 'move' | 'rotate' | 'scale'): boolean {
+    if (this.drag || this.modal) return false;
+    const key = { move: 'G', rotate: 'R', scale: 'S' }[mode];
+    const verb = { move: 'move', rotate: 'rotate', scale: 'scale' }[mode];
+    if (!this.mouse.inside) { status(`Point at a view, then press ${key} to ${verb}.`); return false; }
+    const p = this.paneAt(this.mouse.x, this.mouse.y);
+    if (!p) return false;
+    if (!ed.selectionCount()) { status(`Select something to ${verb}, then press ${key}.`); return false; }
+    if (mode === 'scale' && ed.mode === 'bone' && ed.poseActive) { toast('Joints in a pose can be moved and rotated, not scaled.', 'info'); return false; }
+    const center = this.gizmoCenter();
+    if (!center) return false;
+    const { x, y } = this.mouse;
+    this.startTransform(p, { type: 'center', axis: 0 }, x, y, mode);
+    const d = this.drag as Drag | null;
+    if (!d || d.kind !== 'transform') return false;
+    const s = p.project(center.x, center.y, center.z);
+    this.modal = {
+      mode, d, cx: s.x, cy: s.y, x0: x, y0: y, d0: Math.max(20, Math.hypot(x - s.x, y - s.y)),
+      lastAngle: Math.atan2(y - s.y, x - s.x), turned: 0, lock: null, typed: '', at: { x, y, shift: false, ctrl: false }, fine: null,
+    };
+    this.updateModal();
+    return true;
+  }
+
+  private updateModal(at?: { x: number; y: number; shift: boolean; ctrl: boolean }) {
+    const md = this.modal;
+    if (!md) return;
+    if (at) {
+      // Rotation counts every turn around the centre, so going past half a turn doesn't flip it.
+      const ang = Math.atan2(at.y - md.cy, at.x - md.cx);
+      let step = ang - md.lastAngle;
+      while (step > Math.PI) step -= Math.PI * 2;
+      while (step < -Math.PI) step += Math.PI * 2;
+      md.turned += step;
+      md.lastAngle = ang;
+      if (at.shift && !md.fine) md.fine = { x: md.at.x, y: md.at.y, turned: md.turned - step };
+      if (!at.shift) md.fine = null;
+      md.at = at;
+    }
+    const { shift, ctrl } = md.at;
+    // Shift: only a tenth of the mouse's travel since Shift went down counts.
+    const fineX = md.fine ? md.fine.x + (md.at.x - md.fine.x) * 0.1 : md.at.x;
+    const fineY = md.fine ? md.fine.y + (md.at.y - md.fine.y) * 0.1 : md.at.y;
+    const turned = md.fine ? md.fine.turned + (md.turned - md.fine.turned) * 0.1 : md.turned;
+    const snap = ctrl !== ed.snap;
+    const typed = parseFloat(md.typed);
+    const hasTyped = md.typed !== '' && Number.isFinite(typed);
+    const L = md.lock;
+    const p = md.d.pane, c = md.d.center;
+    const lockText = !L ? '' : L.plane ? `  locked off ${'XYZ'[L.axis]}` : `  along ${'XYZ'[L.axis]}`;
+    const typedText = md.typed ? `  typed ${md.typed}` : '';
+    const help = 'click or Enter keeps it, Esc or right click cancels. X Y Z lock an axis (Shift for the other two), type a number, Ctrl snaps, Shift fine.';
+
+    if (md.mode === 'scale') {
+      let f = hasTyped ? typed : Math.hypot(fineX - md.cx, fineY - md.cy) / md.d0;
+      if (!hasTyped && snap) f = Math.round(f * 10) / 10;
+      const v: V3 = [0, 1, 2].map((i) => (!L ? f : L.plane ? (i === L.axis ? 1 : f) : (i === L.axis ? f : 1))) as V3;
+      this.applyTransform(md.d, md.at.x, md.at.y, false, undefined, v);
+      status(`Scale ${f.toFixed(3)}${lockText}${typedText}: ${help}`);
+    } else if (md.mode === 'move') {
+      const move = new THREE.Vector3();
+      const u = p.unitsPerPixel(c);
+      const dx = fineX - md.x0, dy = fineY - md.y0;
+      const s0 = p.project(c.x, c.y, c.z);
+      const axisScreen = (a: number) => {
+        const e = p.project(c.x + AXIS_DIR[a][0] * u * GIZMO, c.y + AXIS_DIR[a][1] * u * GIZMO, c.z + AXIS_DIR[a][2] * u * GIZMO);
+        const ax = e.x - s0.x, ay = e.y - s0.y;
+        return { ax, ay, len: Math.hypot(ax, ay) || 1 };
+      };
+      if (hasTyped) {
+        // A typed distance runs along the locked axis, or X as in Blender.
+        move.setComponent(L ? L.axis : 0, typed);
+      } else if (!L) {
+        const { right, up } = p.screenAxes();
+        move.copy(right).multiplyScalar(dx * u).addScaledVector(up, -dy * u);
+      } else if (!L.plane) {
+        const { ax, ay, len } = axisScreen(L.axis);
+        move.setComponent(L.axis, (((dx * ax + dy * ay) / len) / len) * u * GIZMO);
+      } else {
+        const a1 = (L.axis + 1) % 3, a2 = (L.axis + 2) % 3;
+        const A = axisScreen(a1), B = axisScreen(a2);
+        const det = A.ax * B.ay - A.ay * B.ax;
+        if (Math.abs(det) > 1e-6) {
+          move.setComponent(a1, ((dx * B.ay - dy * B.ax) / det) * u * GIZMO);
+          move.setComponent(a2, ((A.ax * dy - A.ay * dx) / det) * u * GIZMO);
+        }
+      }
+      if (!hasTyped && snap) { const st = ed.snapStep; move.set(Math.round(move.x / st) * st, Math.round(move.y / st) * st, Math.round(move.z / st) * st); }
+      // Locked to one axis, nothing strays off it.
+      if (L && !L.plane) [0, 1, 2].forEach((i) => { if (i !== L.axis) move.setComponent(i, 0); });
+      if (L && L.plane) move.setComponent(L.axis, 0);
+      this.applyTransform(md.d, md.at.x, md.at.y, false, move);
+      status(`Move  X ${move.x.toFixed(3)}  Y ${move.y.toFixed(3)}  Z ${move.z.toFixed(3)}${lockText}${typedText}: ${help}`);
+    } else {
+      // Around the view direction, or the locked axis; turning the mouse counter-clockwise turns it counter-clockwise.
+      const view = p.viewDir(c);
+      let axis: V3, angle: number;
+      if (L) {
+        axis = AXIS_DIR[L.axis];
+        const facing = axis[0] * view.x + axis[1] * view.y + axis[2] * view.z;
+        angle = facing >= 0 ? -turned : turned;
+      } else {
+        axis = [view.x, view.y, view.z];
+        angle = -turned;
+      }
+      if (hasTyped) angle = ((L ? 1 : -1) * typed * Math.PI) / 180;
+      else if (snap) { const st = (ed.snapAngle * Math.PI) / 180; angle = Math.round(angle / st) * st; }
+      this.applyTransform(md.d, md.at.x, md.at.y, false, undefined, undefined, { axis, angle });
+      status(`Rotate ${((Math.abs(angle) * 180) / Math.PI).toFixed(1)}°${lockText}${typedText}: ${help}`);
+    }
+    this.invalidate();
+  }
+
+  private confirmModal() {
+    if (!this.modal) return;
+    this.modal = null;
+    this.drag = null;
+    ed.commit();
+    status('');
+    ed.emitAll();
+    this.invalidate();
+  }
+
+  private cancelModal() {
+    if (!this.modal) return;
+    this.modal = null;
+    this.cancelDrag();
+  }
+
+  private modalKey(e: KeyboardEvent): boolean {
+    const md = this.modal!;
+    const k = e.key;
+    if (k === 'Escape') { this.cancelModal(); return true; }
+    if (k === 'Enter' || k === ' ') { this.confirmModal(); return true; }
+    const axis = 'xyz'.indexOf(k.toLowerCase());
+    if (axis >= 0 && k.length === 1 && !e.ctrlKey) {
+      const plane = e.shiftKey;
+      const same = md.lock && md.lock.axis === axis && md.lock.plane === plane;
+      // The same key again lets go of the lock.
+      md.lock = same ? null : { axis: axis as 0 | 1 | 2, plane };
+      this.updateModal();
+      return true;
+    }
+    if (/^[0-9.,]$/.test(k) || (k === '-' && !md.typed)) { md.typed += k === ',' ? '.' : k; this.updateModal(); return true; }
+    if (k === 'Backspace') { md.typed = md.typed.slice(0, -1); this.updateModal(); return true; }
+    if (k === 'Shift' || k === 'Control') { this.updateModal({ ...md.at, shift: e.shiftKey, ctrl: e.ctrlKey }); return true; }
+    // Everything else waits until this is done.
+    return true;
+  }
+
+  private drawModal(g: CanvasRenderingContext2D, p: Pane) {
+    const md = this.modal;
+    if (!md || md.d.pane !== p) return;
+    // The locked axis, or the two of a locked plane, through the centre.
+    if (md.lock) {
+      const c = md.d.center;
+      const dirs = md.lock.plane ? [0, 1, 2].filter((i) => i !== md.lock!.axis) : [md.lock.axis];
+      for (const i of dirs) {
+        const a = AXIS_DIR[i];
+        const far = 1000;
+        const s0 = p.project(c.x - a[0] * far, c.y - a[1] * far, c.z - a[2] * far), s1 = p.project(c.x + a[0] * far, c.y + a[1] * far, c.z + a[2] * far);
+        g.strokeStyle = AXIS[i]; g.lineWidth = 1.5;
+        g.beginPath(); g.moveTo(s0.x, s0.y); g.lineTo(s1.x, s1.y); g.stroke();
+      }
+    }
+    // Rotate and scale measure from the centre: a dashed line to the mouse shows it, as Blender draws.
+    if (md.mode !== 'move') {
+      g.strokeStyle = '#ffffff'; g.lineWidth = 1; g.setLineDash([4, 4]);
+      g.beginPath(); g.moveTo(md.cx, md.cy); g.lineTo(md.at.x, md.at.y); g.stroke();
+      g.setLineDash([]);
+      g.fillStyle = '#ffffff'; g.beginPath(); g.arc(md.cx, md.cy, 3, 0, Math.PI * 2); g.fill();
+    }
+  }
+
+  /** T over a view: extrude the selection where the mouse is, following it. False if the mouse is elsewhere or nothing is selected. */
+  startExtrudeHere(): boolean {
+    if (!this.mouse.inside) return false;
+    const p = this.paneAt(this.mouse.x, this.mouse.y);
+    return p ? this.extrudeTool.startModal(p, this.mouse.x, this.mouse.y) : false;
   }
 
   zoomKey(factor: number) {
@@ -438,6 +702,9 @@ export class Viewports {
       this.drawFreehandPreview(g, p);
       if (ed.tool === 'knife') this.knife.draw(g, p);
       if (ed.tool === 'loopcut') this.loopTool.draw(g, p);
+      if (ed.tool === 'pen' || ed.tool === 'blob') this.pen.draw(g, p);
+      if (ed.tool === 'extrude' || this.extrudeTool.active) this.extrudeTool.draw(g, p);
+      this.drawModal(g, p);
       if (p === this.active && this.layout === 'quad') {
         g.strokeStyle = 'rgba(242,178,76,.55)'; g.lineWidth = 1;
         g.strokeRect(p.x + 0.5, p.y + 0.5, p.w - 1, p.h - 1);
@@ -478,6 +745,9 @@ export class Viewports {
 
   /** Keys for the Knife and Loop Cut, before the app's shortcuts. True if one was used. */
   toolKey(e: KeyboardEvent): boolean {
+    if (this.modal) return this.modalKey(e);
+    if (this.extrudeTool.active) return this.extrudeTool.key(e);
+    if (ed.tool === 'pen' || (ed.tool === 'blob' && this.pen.active)) return this.pen.key(e);
     if (ed.tool === 'knife') {
       if (this.knife.key(e)) return true;
     } else if (ed.tool === 'loopcut') {
@@ -1039,6 +1309,12 @@ export class Viewports {
 
     ov.addEventListener('pointerdown', (e) => {
       ov.focus({ preventScroll: true });
+      // While moving, rotating or scaling with G, R or S, a click keeps it and a right click puts it back.
+      if (this.modal) {
+        if (e.button === 0) this.confirmModal();
+        else if (e.button === 2) this.cancelModal();
+        return;
+      }
       const { x, y } = this.local(e);
       const p = this.paneAt(x, y);
       if (!p) return;
@@ -1046,11 +1322,13 @@ export class Viewports {
       this.invalidate();
 
       // Camera navigation
-      this.rightPress = e.button === 2 && (this.session || ed.tool === 'knife' || ed.tool === 'loopcut') ? { x, y } : null;
+      this.rightPress = e.button === 2 && (this.session || ed.tool === 'knife' || ed.tool === 'loopcut' || this.pen.active) ? { x, y } : null;
       // During a slide, a right click leaves the loop in the centre instead of moving the view.
       if (e.button === 2 && this.loopTool.sliding) { this.loopTool.cancelSlide(); return; }
+      // A right click while extruding puts everything back, as in Blender.
+      if (e.button === 2 && this.extrudeTool.active) { this.extrudeTool.cancel(); return; }
       if (e.button === 1) { this.drag = { kind: 'pan', pane: p, x, y }; return; }
-      if (e.button === 2 && (this.drag?.kind === 'transform' || this.drag?.kind === 'extrude' || this.drag?.kind === 'ik' || this.drag?.kind === 'sculpt')) { this.cancelDrag(); return; }
+      if (e.button === 2 && (this.drag?.kind === 'transform' || this.drag?.kind === 'ik' || this.drag?.kind === 'sculpt')) { this.cancelDrag(); return; }
       if (e.altKey && (e.button === 0 || e.button === 2)) { this.drag = { kind: altDragKind(p, e), pane: p, x, y }; return; }
       if (e.button === 2) { this.drag = { kind: p.isOrtho ? 'pan' : 'orbit', pane: p, x, y }; return; }
       if (e.button !== 0) return;
@@ -1067,6 +1345,8 @@ export class Viewports {
       if (!d) {
         const p = this.paneAt(x, y);
         if (ed.tool === 'knife' && p) { this.knife.move(p, x, y, e); return; }
+        if ((ed.tool === 'pen' || (ed.tool === 'blob' && this.pen.active)) && p) { this.pen.move(p, x, y, e); return; }
+        if ((ed.tool === 'extrude' || this.extrudeTool.active) && p) { this.extrudeTool.move(p, x, y, e); return; }
         if (ed.tool === 'loopcut') {
           const at = p ?? this.active;
           if (at) this.loopTool.move(at, x, y, e);
@@ -1085,8 +1365,10 @@ export class Viewports {
         case 'panVertical': d.pane.panVertical(y - d.y); d.x = x; d.y = y; break;
         case 'zoom': d.pane.zoom(Math.pow(1.006, (d.x - x) + (y - d.y))); d.x = x; d.y = y; break;
         case 'box': d.x1 = x; d.y1 = y; break;
-        case 'transform': this.applyTransform(d, x, y, e.ctrlKey !== ed.snap); break;
-        case 'extrude': this.applyExtrude(d, x, y, e.altKey, e.ctrlKey !== ed.snap); break;
+        case 'transform':
+          if (this.modal?.d === d) this.updateModal({ x, y, shift: e.shiftKey, ctrl: e.ctrlKey });
+          else this.applyTransform(d, x, y, e.ctrlKey !== ed.snap);
+          break;
         case 'prim': this.dragPrim(d, x, y, e); break;
         case 'primResize': this.dragPrimResize(d, x, y, e); break;
         case 'ik': this.dragIK(d, x, y); break;
@@ -1099,10 +1381,10 @@ export class Viewports {
       this.invalidate();
     });
 
-    ov.addEventListener('pointerleave', () => { this.mouse.inside = false; this.invalidate(); });
+    ov.addEventListener('pointerleave', () => { this.mouse.inside = false; this.extrudeTool.clearHover(); this.invalidate(); });
 
     const finish = (e: PointerEvent) => {
-      if (e.button === 0) { this.knife.up(); this.loopTool.up(); }
+      if (e.button === 0) { this.knife.up(); this.loopTool.up(); this.pen.up(); this.extrudeTool.up(); }
       const d = this.drag;
       if (!d) return;
       this.drag = null;
@@ -1111,11 +1393,12 @@ export class Viewports {
       if (e.button === 2 && this.rightPress && Math.hypot(x - this.rightPress.x, y - this.rightPress.y) < 4) {
         if (ed.tool === 'knife') this.knife.rightClick();
         else if (ed.tool === 'loopcut') this.finishOneShot();
+        else if (this.pen.active) this.pen.rightClick();
         else this.dropPrim();
       }
       this.rightPress = null;
       if (d.kind === 'box') this.finishBox(d);
-      else if (d.kind === 'transform' || d.kind === 'extrude') { ed.commit(); status(''); ed.emitAll(); }
+      else if (d.kind === 'transform') { ed.commit(); status(''); ed.emitAll(); }
       else if (d.kind === 'prim') this.finishPrim(d);
       else if (d.kind === 'primResize') { if (d.made) this.commitPrim(d.s); }
       else if (d.kind === 'ik') { ed.commit(); status(''); ed.emitAll(); }
@@ -1137,6 +1420,18 @@ export class Viewports {
       // A double-click finishes whatever is being drawn.
       if (this.session) { this.dropPrim(); return; }
       if (ed.tool === 'knife') { this.knife.closeLoop(); return; }
+      if (ed.tool === 'extrude') {
+        const { x, y } = this.local(e);
+        const p = this.paneAt(x, y);
+        if (p) this.extrudeTool.dblclick(p, x, y);
+        return;
+      }
+      if (ed.tool === 'pen' || (ed.tool === 'blob' && this.pen.active)) {
+        const { x, y } = this.local(e);
+        const p = this.paneAt(x, y);
+        if (p) this.pen.dblclick(p, x, y);
+        return;
+      }
       if (ed.tool === 'face' && this.facePending.length) { this.closeFace(); return; }
       if (ed.tool !== 'select' || ed.mode !== 'edge') return;
       const { x, y } = this.local(e);
@@ -1164,7 +1459,7 @@ export class Viewports {
         d.base.forEach((q, id) => setKey(ensureTrack(ed.testClip, id).rot, d.frame, q));
         ed.emit('anim', 'geometry');
       } else ed.cancel();
-    } else if (d.kind === 'transform' || d.kind === 'extrude' || d.kind === 'paint' || d.kind === 'ref' || d.kind === 'sculpt') ed.cancel();
+    } else if (d.kind === 'transform' || d.kind === 'paint' || d.kind === 'ref' || d.kind === 'sculpt') ed.cancel();
     else if ((d.kind === 'prim' || d.kind === 'primResize') && d.made) {
       this.sessionWriting = true;
       ed.cancel();
@@ -1185,15 +1480,28 @@ export class Viewports {
     switch (t) {
       case 'select': case 'move': case 'rotate': case 'scale':
         this.startSelect(p, x, y, e); return;
-      case 'extrude': this.startExtrude(p, x, y); return;
+      case 'extrude': this.extrudeTool.down(p, x, y, e); return;
       case 'vertex': this.placeVertex(p, x, y); return;
       case 'face': this.faceClick(p, x, y); return;
       case 'joint': this.placeJoint(p, x, y); return;
       case 'ik': this.startIK(p, x, y); return;
-      case 'stroke': case 'blob': case 'lathe': this.startFreehand(p, x, y, t); return;
+      case 'blob':
+        // While a drawn shape is being shaped, its ring handles come first; a press anywhere else finishes it
+        // and starts the next one.
+        if (this.pen.active) {
+          if (this.pen.down(p, x, y, e)) return;
+          this.pen.finish();
+        }
+        this.startFreehand(p, x, y, t);
+        return;
+      case 'stroke': case 'lathe': this.startFreehand(p, x, y, t); return;
       case 'sculpt': this.startSculpt(p, x, y, e); return;
       case 'loopcut': this.loopTool.down(p, x, y); return;
       case 'knife': this.knife.down(p, x, y, e); return;
+      case 'pen':
+        if (this.pen.active && this.pen.owner !== 'pen') this.pen.reset();
+        this.pen.down(p, x, y, e);
+        return;
       case 'paint': {
         if (ed.activeBone === null) { toast('Pick a bone in the Skeleton panel first.', 'warn'); return; }
         ed.begin('Paint weights');
@@ -1257,8 +1565,7 @@ export class Viewports {
   }
 
   // ---------- transform ----------
-  private startTransform(p: Pane, handle: Handle, x: number, y: number) {
-    const mode = this.gizmoMode()!;
+  private startTransform(p: Pane, handle: Handle, x: number, y: number, mode = this.gizmoMode()!) {
     const center = this.gizmoCenter()!;
     const orig = new Map<number, V3>();
     let boneOrig: Map<number, V3> | undefined;
@@ -1325,7 +1632,7 @@ export class Viewports {
     return { bones, center };
   }
 
-  private applyTransform(d: Extract<Drag, { kind: 'transform' }>, x: number, y: number, snap: boolean) {
+  private applyTransform(d: Extract<Drag, { kind: 'transform' }>, x: number, y: number, snap: boolean, fixedMove?: THREE.Vector3, fixedScale?: V3, fixedRot?: { axis: V3; angle: number }) {
     const p = d.pane;
     const c = d.center;
     const s = p.project(c.x, c.y, c.z);
@@ -1343,7 +1650,8 @@ export class Viewports {
     };
 
     if (d.mode === 'move') {
-      if (d.handle.type === 'axis') {
+      if (fixedMove) move.copy(fixedMove);
+      else if (d.handle.type === 'axis') {
         const { ax, ay, len } = axisScreen(d.handle.axis);
         const along = (dx * ax + dy * ay) / len;
         move.setComponent(d.handle.axis, (along / len) * u * GIZMO);
@@ -1359,10 +1667,11 @@ export class Viewports {
       } else {
         move = right.clone().multiplyScalar(dx * u).addScaledVector(up, -dy * u);
       }
-      if (snap) { const st = ed.snapStep; move.set(Math.round(move.x / st) * st, Math.round(move.y / st) * st, Math.round(move.z / st) * st); }
+      if (snap && !fixedMove) { const st = ed.snapStep; move.set(Math.round(move.x / st) * st, Math.round(move.y / st) * st, Math.round(move.z / st) * st); }
       status(`Move  X ${move.x.toFixed(3)}  Y ${move.y.toFixed(3)}  Z ${move.z.toFixed(3)}`);
     } else if (d.mode === 'scale') {
-      if (d.handle.type === 'axis') {
+      if (fixedScale) scale = [...fixedScale] as V3;
+      else if (d.handle.type === 'axis') {
         const { ax, ay, len } = axisScreen(d.handle.axis);
         const k = Math.max(0.001, 1 + ((dx * ax + dy * ay) / len) / GIZMO);
         const val = snap ? Math.round(k * 10) / 10 : k;
@@ -1373,6 +1682,9 @@ export class Viewports {
         scale = [val, val, val];
       }
       status(`Scale  X ${scale[0].toFixed(3)}  Y ${scale[1].toFixed(3)}  Z ${scale[2].toFixed(3)}`);
+    } else if (fixedRot) {
+      rotAxis = fixedRot.axis;
+      rotAngle = fixedRot.angle;
     } else {
       const ang = Math.atan2(y - s.y, x - s.x);
       let delta = ang - (d.startAngle ?? 0);
@@ -1434,45 +1746,6 @@ export class Viewports {
       const mi = d.mirror.get(i);
       if (mi !== undefined) ed.model.verts[mi].p = [-n[0], n[1], n[2]];
     });
-    ed.emit('geometry');
-  }
-
-  // ---------- extrude ----------
-  private startExtrude(p: Pane, x: number, y: number) {
-    const faces = ed.selectedFaceSet();
-    if (!faces.size) { toast('Select faces to extrude.', 'warn'); return; }
-    ed.lastOp = null;
-    ed.begin('Extrude');
-    const { top, normal, vertexNormals } = ops.extrudeFaces(ed.model, faces);
-    const verts = new Map<number, V3>();
-    top.forEach((v) => verts.set(v, [...ed.model.verts[v].p] as V3));
-    const c = bounds([...verts.values()]).center;
-    ed.emit('topology');
-    this.drag = { kind: 'extrude', pane: p, x0: x, y0: y, verts, normals: vertexNormals, center: new THREE.Vector3(...c), axis: new THREE.Vector3(...normal) };
-  }
-
-  private applyExtrude(d: Extract<Drag, { kind: 'extrude' }>, x: number, y: number, alongVertexNormals: boolean, snap: boolean) {
-    const p = d.pane;
-    const c = d.center;
-    const u = p.unitsPerPixel(c);
-    const s = p.project(c.x, c.y, c.z);
-    const e = p.project(c.x + d.axis.x, c.y + d.axis.y, c.z + d.axis.z);
-    let ax = e.x - s.x, ay = e.y - s.y;
-    const l = Math.hypot(ax, ay);
-    let amount: number;
-    if (l < 1e-3 || l / (1 / u) < 0.15) {
-      // Normal points at the camera: fall back to vertical motion.
-      amount = (d.y0 - y) * u;
-    } else {
-      ax /= l; ay /= l;
-      amount = ((x - d.x0) * ax + (y - d.y0) * ay) * (1 / l);
-    }
-    if (snap) amount = Math.round(amount / ed.snapStep) * ed.snapStep;
-    d.verts.forEach((o, i) => {
-      const n: V3 = alongVertexNormals ? d.normals.get(i) ?? [d.axis.x, d.axis.y, d.axis.z] : [d.axis.x, d.axis.y, d.axis.z];
-      ed.model.verts[i].p = [o[0] + n[0] * amount, o[1] + n[1] * amount, o[2] + n[2] * amount];
-    });
-    status(`Extrude  ${amount.toFixed(3)}   (Alt: along vertex normals)`);
     ed.emit('geometry');
   }
 
@@ -1624,10 +1897,13 @@ export class Viewports {
       name = 'Lathe';
       prim = lathe(profile, axis, [0, 0, 0], [right.x, right.y, right.z], [up.x, up.y, up.z], ed.lowPoly ? Math.max(4, ed.primRings) : Math.max(12, ed.primRings * 2), sides, smooth);
     } else {
+      // Draw Shape: the outline is shaped with the same rings as a Pen Shape, then finished with Enter.
       const { right, up } = d.pane.screenAxes();
       const toLocal = (q: THREE.Vector3): [number, number] => { const v = q.clone().sub(d.origin); return [v.dot(right), v.dot(up)]; };
-      name = 'Shape';
-      prim = silhouette(d.points.map(toLocal), [d.origin.x, d.origin.y, d.origin.z], [right.x, right.y, right.z], [up.x, up.y, up.z], ed.lowPoly ? Math.max(3, ed.primRings - 1) : Math.max(8, ed.primRings), sides, ed.blobDepth, smooth);
+      if (!this.pen.adopt(d.pane, d.points.map(toLocal), [d.origin.x, d.origin.y, d.origin.z], [right.x, right.y, right.z], [up.x, up.y, up.z])) {
+        toast('Draw around a shape to inflate it.', 'info');
+      }
+      return;
     }
     if (!prim) { toast(d.tool === 'stroke' ? 'Drag a longer line to draw a tube.' : d.tool === 'lathe' ? 'Draw a longer outline to spin it.' : 'Draw around a shape to inflate it.', 'info'); return; }
     const made = prim;
@@ -1639,6 +1915,41 @@ export class Viewports {
       if (ed.mirrorX && ed.workspace === 'block') mirrorPiece(m, gid);
     });
     status('');
+  }
+
+  /**
+   * Build a Pen Shape piece as an adjustable operation: rings stacked along the shape's length like Draw Shape,
+   * but all quads, with grid caps instead of poles. It reads the outline from `build` each time it runs, so the
+   * tool can reshape the outline and rerun it live. Each ring's depth and width, Rings, Sides and Smooth stay
+   * adjustable in the panel afterwards.
+   */
+  startPenPiece(build: PenBuild): boolean {
+    // Limbs, like fingers, become their own parts, so a drawn hand keeps its fingers.
+    const make = (v: Record<string, any>) => inflateParts(build.outline, build.origin, build.right, build.up, v.rings, v.sides, v.smooth, {
+      depth: [0, 1, 2].map((k) => v[depthKey(k)]) as [number, number, number],
+      width: [0, 1, 2].map((k) => v[widthKey(k)]) as [number, number, number],
+    }, build.limbs);
+    const params: OpParam[] = [];
+    // Top first, as they read in the panel.
+    for (const k of [2, 1, 0]) {
+      const name = ['Bottom', 'Middle', 'Top'][k];
+      params.push({ key: depthKey(k), label: `${name} depth`, type: 'number', value: build.depth, min: 0.05, max: 4, step: 0.05 });
+      params.push({ key: widthKey(k), label: `${name} width`, type: 'number', value: 1, min: 0.05, max: 4, step: 0.05 });
+    }
+    params.push(
+      { key: 'rings', label: 'Rings', type: 'number', value: ed.lowPoly ? Math.max(3, ed.primRings - 1) : Math.max(8, ed.primRings), min: 2, max: 64, step: 1 },
+      { key: 'sides', label: 'Sides', type: 'number', value: ed.primSegments, min: 3, max: 64, step: 1 },
+      { key: 'smooth', label: 'Smooth', type: 'bool', value: !ed.lowPoly },
+    );
+    if (!make(Object.fromEntries(params.map((x) => [x.key, x.value])))) return false;
+    ed.runOp(build.label, params, (m, v) => {
+      const prim = make(v);
+      if (!prim) return;
+      const res = ops.addPrim(m, prim, 'Shape', { material: ed.activeMaterial });
+      this.selectNewPrim(res);
+      if (ed.mirrorX && ed.workspace === 'block') mirrorPiece(m, res.groupId);
+    });
+    return true;
   }
 
   private drawFreehandPreview(g: CanvasRenderingContext2D, p: Pane) {

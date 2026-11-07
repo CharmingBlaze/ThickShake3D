@@ -141,7 +141,7 @@ function groupRows() {
 }
 
 // ---------- blockout ----------
-const BLOCK_SHAPES = ['limb', 'stroke', 'blob', 'lathe', 'sphere', 'capsule', 'tapered', 'box', 'cylinder', 'cone', 'torus'];
+const BLOCK_SHAPES = ['limb', 'stroke', 'blob', 'pen', 'lathe', 'sphere', 'capsule', 'tapered', 'box', 'cylinder', 'cone', 'torus'];
 
 /** Rough out a character quickly, or anything else, from simple pieces. Every other shape is in the Create menu. */
 function blockPanel() {
@@ -180,6 +180,7 @@ function blockPanel() {
       h('p', { class: 'muted small' }, ed.tool === 'limb' ? 'Drag from one end of the limb to the other.'
         : ed.tool === 'stroke' ? 'Draw a line and it becomes a tube. [ and ] change its thickness.'
           : ed.tool === 'blob' ? 'Draw around an outline and it inflates into a rounded solid.'
+          : ed.tool === 'pen' ? 'Click for corners, drag for curves, click the first point to close. Drag points and handles to reshape, then press Enter to inflate.'
             : ed.tool === 'lathe' ? 'Draw half an outline, top to bottom, and it spins around the centre line.'
             : 'Drag out the shape in a view, then in another view for depth.'),
       checkbox('Symmetry across X', ed.mirrorX, () => runCommand('view.mirrorX')),

@@ -177,6 +177,8 @@ function fromObject(root: THREE.Object3D, clips: THREE.AnimationClip[], name: st
     const byMat = new Map<number, number>();
     const flipV = srcMats.some((x) => (x as any).map?.flipY);
     const startFace = m.faces.length;
+    // A mirroring transform (negative scale) turns the triangles inside out; wind them back.
+    const mirrored = xform.determinant() < 0;
     for (const g of groups) {
       const mi = g.materialIndex ?? 0;
       if (!byMat.has(mi)) {
@@ -187,7 +189,7 @@ function fromObject(root: THREE.Object3D, clips: THREE.AnimationClip[], name: st
       const gid = byMat.get(mi)!;
       const end = Math.min(g.start + g.count, index ? index.count : pos.count);
       for (let i = g.start; i + 2 < end; i += 3) {
-        const c = [0, 1, 2].map((k) => (index ? index.getX(i + k) : i + k));
+        const c = (mirrored ? [0, 2, 1] : [0, 1, 2]).map((k) => (index ? index.getX(i + k) : i + k));
         const uvs: V2[] = c.map((x) => (uv ? [uv.getX(x), flipV ? 1 - uv.getY(x) : uv.getY(x)] : [0, 0]));
         m.faces.push({ v: c.map((x) => local[x]), uv: uvs, g: gid, s: 0 });
       }

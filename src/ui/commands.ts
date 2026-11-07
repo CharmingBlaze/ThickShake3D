@@ -238,8 +238,8 @@ export const TOOLS: { id: ToolId; label: string; key?: string; icon: string; gro
   { id: 'select', label: 'Select', key: 'Q', group: 'edit', hint: 'Click or drag a box. Shift adds, Ctrl removes. Double-click an edge for its loop.', icon: '<path d="M6 3l12 9-5.5 1.2L15.5 20l-2.6 1.2-3-6.8L6 18z"/>' },
   { id: 'move', label: 'Move', key: 'W', group: 'edit', hint: 'Drag an arrow, plane or the centre square. Ctrl toggles snapping.', icon: '<path d="M12 3v18M3 12h18M12 3l-3 3M12 3l3 3M12 21l-3-3M12 21l3-3M3 12l3-3M3 12l3 3M21 12l-3-3M21 12l-3 3"/>' },
   { id: 'rotate', label: 'Rotate', key: 'E', group: 'edit', hint: 'Drag a ring, or the outer circle to spin around the view. Ctrl toggles angle snapping.', icon: '<path d="M20 12a8 8 0 1 1-2.6-5.9"/><path d="M20 3v5h-5"/>' },
-  { id: 'scale', label: 'Scale', key: 'R', group: 'edit', hint: 'Drag a handle for one axis, or the centre square for uniform scale.', icon: '<rect x="4" y="11" width="9" height="9" rx="1"/><path d="M13 11l7-7M15 4h5v5"/>' },
-  { id: 'extrude', label: 'Extrude', key: 'T', group: 'model', hint: 'Select faces, then drag in a view. Alt pushes along vertex normals.', icon: '<path d="M4 15l8-4 8 4-8 4z"/><path d="M12 11V3M9 6l3-3 3 3"/>' },
+  { id: 'scale', label: 'Scale', group: 'edit', hint: 'Drag a handle for one axis, or the centre square for uniform scale.', icon: '<rect x="4" y="11" width="9" height="9" rx="1"/><path d="M13 11l7-7M15 4h5v5"/>' },
+  { id: 'extrude', label: 'Extrude', key: 'T', group: 'model', hint: 'Drag any face to pull it out or push it in, or click it and move. T over a view extrudes the selection and follows the mouse. Type a distance; double-click repeats the last one.', icon: '<path d="M4 15l8-4 8 4-8 4z"/><path d="M12 11V3M9 6l3-3 3 3"/>' },
   { id: 'loopcut', label: 'Loop Cut', key: 'Ctrl+R', group: 'model', hint: 'Hover an edge to see the loop. Wheel or Page Up/Down changes the number of cuts. Click to place, move to slide, click again to confirm. Right click or Esc leaves it centred.', icon: '<rect x="4" y="5" width="16" height="14" rx="1"/><path d="M12 3v18" stroke-dasharray="2.5 2.5"/>' },
   { id: 'knife', label: 'Knife', key: 'K', group: 'model', hint: 'Click to cut across faces, or drag to draw. Enter or Space confirms, Esc cancels, E new cut, double-click closes, Ctrl midpoints, Shift no snap, A angle, C cut through, X Y Z axis, S measure.', icon: '<path d="M4 20L15.5 3.5c2.5 2 4 5 3.5 8.5l-7.5 2z"/><path d="M4 20l7.5-6"/>' },
   { id: 'vertex', label: 'Vertex', group: 'model', hint: 'Click in a view to place a vertex.', icon: '<circle cx="12" cy="12" r="3.2" fill="currentColor"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3"/>' },
@@ -255,8 +255,9 @@ export const TOOLS: { id: ToolId; label: string; key?: string; icon: string; gro
   { id: 'part', label: 'Part', group: 'block', hint: 'Drag from one end of a character part to the other.', icon: '<path d="M12 3c-4 0-7 3-7 7.5 0 5 3.5 10.5 7 10.5s7-5.5 7-10.5C19 6 16 3 12 3z"/>' },
   { id: 'stroke', label: 'Tube', group: 'block', hint: 'Draw a line, freehand, and it becomes a rounded tube: tentacles, tails, hair, vines. Ctrl+wheel sets the thickness.', icon: '<path d="M4 19c4 0 3-7 7-7s4 5 9-7" stroke-width="3" stroke-linecap="round"/>' },
   { id: 'blob', label: 'Draw Shape', group: 'block', hint: 'Draw around any outline and it inflates into a rounded solid: a torso, a hand, a leaf, a rock.', icon: '<path d="M5 13c-2-5 3-9 8-8s8 5 6 10-7 6-10 4-3-3-4-6z" stroke-dasharray="3 2.5"/>' },
+  { id: 'pen', label: 'Pen Shape', group: 'block', hint: 'Draw an outline with curves, the way a vector pen does: click for a corner, drag for a curve, click the first point to close. Reshape it, then press Enter to inflate it into a rounded piece: a head, a hand, a body.', icon: '<path d="M4 20c1-6 3-9 8-11"/><path d="M12 9l3-6 6 6-6 3z"/><circle cx="4" cy="20" r="1.4" fill="currentColor"/><circle cx="15" cy="9" r="1.2" fill="currentColor"/>' },
   { id: 'lathe', label: 'Lathe', group: 'block', hint: 'Draw half an outline, top to bottom, and it spins into a solid around the centre line: a torso, a head, a vase, a bottle.', icon: '<path d="M12 3v18" stroke-dasharray="2 2.5"/><path d="M12 4c5 0 7 3 5 7s2 5 1 7-3 2-6 2"/><path d="M12 4c-5 0-7 3-5 7s-2 5-1 7 3 2 6 2" opacity=".35"/>' },
-  { id: 'sculpt', label: 'Sculpt', key: 'S', group: 'model', hint: 'Push the surface around with a soft brush: Grab, Inflate, Smooth, Flatten or Pinch. Shift reverses, Ctrl smooths, Ctrl+wheel resizes.', icon: '<path d="M15 3l6 6-9 9-7 3 3-7z"/><path d="M12 6l6 6"/>' },
+  { id: 'sculpt', label: 'Sculpt', key: 'C', group: 'model', hint: 'Push the surface around with a soft brush: Grab, Inflate, Smooth, Flatten or Pinch. Shift reverses, Ctrl smooths, Ctrl+wheel resizes.', icon: '<path d="M15 3l6 6-9 9-7 3 3-7z"/><path d="M12 6l6 6"/>' },
   { id: 'capsule', label: 'Capsule', group: 'block', hint: DRAW_HINT, icon: '<rect x="7" y="3" width="10" height="18" rx="5"/><path d="M7 9c2 1.5 8 1.5 10 0M7 15c2 1.5 8 1.5 10 0"/>' },
   { id: 'tapered', label: 'Tapered', group: 'block', hint: DRAW_HINT, icon: '<ellipse cx="12" cy="6" rx="4.5" ry="2"/><path d="M7.5 6L5 18c0 1.7 3.1 3 7 3s7-1.3 7-3L16.5 6"/>' },
   { id: 'wedge', label: 'Wedge', group: 'block', hint: DRAW_HINT, icon: '<path d="M3 19h18L3 7z"/>' },
@@ -268,7 +269,11 @@ export const TOOLS: { id: ToolId; label: string; key?: string; icon: string; gro
   { id: 'paint', label: 'Weight Paint', key: 'B', group: 'rig', hint: 'Paint the active joint\'s influence. Shift subtracts. Ctrl+wheel resizes the brush.', icon: '<path d="M14 4l6 6-9 9c-1.5 1.5-4 1.5-5.5 0S4 15 5.5 13.5z"/><path d="M11 7l6 6"/>' },
 ];
 for (const t of TOOLS) {
-  def(`tool.${t.id}`, `${t.label} Tool`, () => setTool(t.id), { key: t.key, checked: () => ed.tool === t.id, hint: t.hint });
+  def(`tool.${t.id}`, `${t.label} Tool`, () => {
+    setTool(t.id);
+    // As in Blender: T over a view, with faces selected, extrudes them straight away and they follow the mouse.
+    if (t.id === 'extrude') app.vp.startExtrudeHere();
+  }, { key: t.key, checked: () => ed.tool === t.id, hint: t.hint });
 }
 
 export function setTool(t: ToolId) {
@@ -322,7 +327,12 @@ def('edit.duplicate', 'Duplicate', () => {
   setTool('move');
 }, { key: 'Shift+D', enabled: notPose });
 
-def('mesh.extrude', 'Extrude Faces', () => setTool('extrude'), { enabled: notPose });
+// G, R and S, as in Blender: the selection follows the mouse until a click or Enter.
+const MODAL_HELP = 'X Y Z lock an axis (Shift for the other two), type a number for an exact value. Click or Enter keeps it, Esc cancels.';
+def('edit.moveHere', 'Move Selection', () => { app.vp.startModalHere('move'); }, { key: 'G', hint: `Move the selection with the mouse. ${MODAL_HELP}` });
+def('edit.rotateHere', 'Rotate Selection', () => { app.vp.startModalHere('rotate'); }, { key: 'R', hint: `Turn the selection by circling the mouse around it. Typed numbers are degrees. ${MODAL_HELP}` });
+def('edit.scaleHere', 'Scale Selection', () => { app.vp.startModalHere('scale'); }, { key: 'S', hint: `Scale the selection by moving the mouse away from it or toward it. ${MODAL_HELP}` });
+def('mesh.extrude', 'Extrude Faces', () => { setTool('extrude'); app.vp.startExtrudeHere(); }, { enabled: notPose });
 
 def('mesh.inset', 'Inset Faces', () => {
   const faces = ed.selectedFaceSet();
@@ -612,7 +622,7 @@ def('view.frameAll', 'Frame All', () => app.vp.frameSelected(true), { key: 'Home
 def('view.maximize', 'Maximize Active Pane', () => { if (app.vp.drawingPrim) app.vp.dropPrim(); else app.vp.toggleMax(); }, { key: 'Space' });
 def('view.fitAll', 'Fit All', () => app.vp.frameSelected(true), { key: 'A' });
 def('view.fitSelected', 'Fit Selected', () => app.vp.frameSelected(false), { key: 'Shift+A' });
-def('view.center', 'Center View at Mouse', () => app.vp.centerAtMouse(), { key: 'G' });
+def('view.center', 'Center View at Mouse', () => app.vp.centerAtMouse(), { key: 'V' });
 def('view.zoomIn', 'Zoom In', () => app.vp.zoomKey(1 / 1.25), { key: '.' });
 def('view.zoomOut', 'Zoom Out', () => app.vp.zoomKey(1.25), { key: ',' });
 def('view.zoomIn2', 'Zoom In Double', () => app.vp.zoomKey(1 / (1.25 * 1.25)), { key: 'Shift+>' });
@@ -1383,6 +1393,8 @@ function navKey(e: KeyboardEvent): boolean {
   if (app.vp.drawingPrim && !e.altKey && !e.shiftKey) { app.vp.adjustPrimSegments(dir[0], dir[1]); return true; }
   // Left and right step through frames in the Animation workspace.
   if (ed.workspace === 'animate' && dir[0] !== 0) return false;
+  // With something selected, the arrows move it along the view; Shift makes the step finer. Alt still pans.
+  if (!e.altKey && ed.workspace !== 'animate' && app.vp.nudgeKey(dir[0], dir[1], e.shiftKey)) return true;
   if (e.altKey) {
     const fine = ed.snap ? ed.snapStep : undefined;
     const scale = e.shiftKey ? 10 : 1;

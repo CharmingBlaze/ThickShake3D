@@ -160,7 +160,18 @@ export function importMS3D(buf: ArrayBuffer, name: string): Model {
   if (hasKeys) {
     const clip: Clip = { id: newId(m), name: name || 'Take', fps: Math.round(fps), length: Math.max(1, totalFrames), loop: true, tracks: {} };
     const frames = new Set<number>();
-    joints.forEach((j) => { j.kr.forEach((k) => frames.add(Math.round(k.t * fps))); j.kp.forEach((k) => frames.add(Math.round(k.t * fps))); });
+    // A key a hair before a whole frame marks a hold up to that frame (see flattenKeys). Rounding it
+    // would land it on the next key and turn the hold into a blend, so keep it as a step key instead.
+    const holds = new Map<number, Set<number>>();
+    joints.forEach((j) => {
+      const s = new Set<number>();
+      for (const k of [...j.kr, ...j.kp]) {
+        const fr = k.t * fps;
+        if (Math.abs(fr - Math.round(fr)) > 1e-4 && Math.ceil(fr) - fr < 0.01) s.add(Math.ceil(fr));
+        else frames.add(Math.round(fr));
+      }
+      holds.set(j.id, s);
+    });
     const sorted = [...frames].sort((a, b) => a - b);
     const sampleEuler = (ks: J['kr'], t: number): Q => {
       if (!ks.length) return [0, 0, 0, 1];
@@ -215,6 +226,14 @@ export function importMS3D(buf: ArrayBuffer, name: string): Model {
       };
       joints.forEach((_, i) => compute(i));
     }
+    joints.forEach((j) => {
+      const s = holds.get(j.id)!;
+      if (!s.size) return;
+      const tr = clip.tracks[j.id];
+      for (const list of [tr.rot, tr.pos] as { f: number; step?: boolean }[][]) {
+        for (let i = 0; i + 1 < list.length; i++) if (s.has(list[i + 1].f)) list[i].step = true;
+      }
+    });
     m.clips.push(clip);
   }
   return finish(m);
@@ -285,7 +304,9 @@ class Writer {
   v3(v: number[]) { this.f32(v[0]); this.f32(v[1]); this.f32(v[2]); }
   str(s: string, n: number) {
     const b = new Uint8Array(n);
-    b.set(new TextEncoder().encode(s).slice(0, n - 1));
+    // MS3D names are single-byte strings and the reader decodes them as latin1, so write latin1 too.
+    const bytes = Array.from(s, (ch) => { const c = ch.codePointAt(0)!; return c < 256 ? c : 63; });
+    b.set(bytes.slice(0, n - 1));
     this.parts.push(b);
   }
   done() {
@@ -308,7 +329,7 @@ export function exportMS3D(m: Model, scale = 1): Uint8Array {
     if (gi === undefined) continue;
     const t = triangulateFace(m, f);
     for (let i = 0; i < t.length; i += 3) {
-      tris.push({ v: [f.v[t[i]], f.v[t[i + 1]], f.v[t[i + 2]]], uv: [f.uv[t[i]], f.uv[t[i + 1]], f.uv[t[i + 2]]], sg: f.s % 255, group: gi });
+      tris.push({ v: [f.v[t[i]], f.v[t[i + 1]], f.v[t[i + 2]]], uv: [f.uv[t[i]], f.uv[t[i + 1]], f.uv[t[i + 2]]], sg: f.s > 0 ? ((f.s - 1) % 255) + 1 : 0, group: gi });
     }
   }
   if (m.verts.length > 65534) throw new Error(`MS3D holds at most 65534 vertices; this model has ${m.verts.length}.`);
@@ -330,23 +351,26 @@ export function exportMS3D(m: Model, scale = 1): Uint8Array {
   }
 
   // Vertex normals per triangle corner by smoothing group.
+  // Smoothing group 0 is flat: those corners take their own triangle's normal.
   const normals = new Map<string, V3>();
-  for (const t of tris) {
+  const normalKey = (x: number, t: { sg: number }, ti: number) => (t.sg ? `${x}|${t.sg}` : `${x}|f${ti}`);
+  for (let ti = 0; ti < tris.length; ti++) {
+    const t = tris[ti];
     const a = m.verts[t.v[0]].p, b = m.verts[t.v[1]].p, c = m.verts[t.v[2]].p;
     const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2], vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
     const n: V3 = [uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx];
     for (const x of t.v) {
-      const k = `${x}|${t.sg}`;
+      const k = normalKey(x, t, ti);
       const e = normals.get(k);
       if (e) { e[0] += n[0]; e[1] += n[1]; e[2] += n[2]; } else normals.set(k, [...n] as V3);
     }
   }
   w.u16(tris.length);
-  for (const t of tris) {
+  tris.forEach((t, ti) => {
     w.u16(0);
     t.v.forEach((x) => w.u16(x));
     for (const x of t.v) {
-      const n = normals.get(`${x}|${t.sg}`)!;
+      const n = normals.get(normalKey(x, t, ti))!;
       const l = Math.hypot(n[0], n[1], n[2]) || 1;
       w.v3([n[0] / l, n[1] / l, n[2] / l]);
     }
@@ -354,7 +378,7 @@ export function exportMS3D(m: Model, scale = 1): Uint8Array {
     t.uv.forEach((u) => w.f32(u[1]));
     w.u8(t.sg);
     w.u8(t.group);
-  }
+  });
 
   const mats = m.materials;
   const matIndex = new Map(mats.map((x, i) => [x.id, i]));

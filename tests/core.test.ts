@@ -9,7 +9,9 @@ import * as ops from '../src/core/ops';
 import * as prims from '../src/core/primitives';
 import { buildSample } from '../src/core/sample';
 import { applyEase, applyPose, bakeClip, capturePose, copyKeys, deleteKeys, EASES, flattenTrack, ikChain, makeLoop, mirrorClip, pasteKeys, reduceKeys, remapKeys, resetPose, retimeClip, reverseClip, solveIK } from '../src/core/anim';
-import { deformPoints, lathe, partPrim, PARTS, pathLength, resamplePath, silhouette, tube } from '../src/core/organic';
+import { deformPoints, lathe, partPrim, PARTS, inflateParts, pathLength, PEN_SECTIONS, penFrame, profileAt, quadSilhouette, resamplePath, ROUND_PROFILE, silhouette, tube } from '../src/core/organic';
+import { bezierAt, insertAnchor, nearestOnOutline, sampleOutline, type PenAnchor } from '../src/core/pen';
+import { splitOutline } from '../src/core/limbs';
 import { addLimb, addStarter, deformPiece, fusePieces, limbFrame, radialPieces, reducePiece, twinOf, alignPieces, arrayPieces, colorsToMaterials, dropPieces, mirrorPiece, pieceBounds, scaleFigure, snapPieces } from '../src/core/blockout';
 import { bounds, dist } from '../src/core/geom';
 import { applyPreset, bakeModelGradient, bakeTextureGradient, blankOrm, evenStops, flipGreen, gradientDirection, guessMapKind, harmonies, hexToHsv, hexToRgb, hsvToHex, MATERIAL_PRESETS, normalFromHeight, packChannel, paletteFromImage, parseHex, parsePaletteText, reverseStops, sampleGradient } from '../src/core/materials';
@@ -466,6 +468,227 @@ describe('mesh operations', () => {
     expect(m.faces.every((f) => f.v.length === 3)).toBe(true);
     ops.quadify(m, all(m));
     expect(m.faces.filter((f) => f.v.length === 4).length).toBeGreaterThan(1);
+  });
+});
+
+describe('mesh operations keep UVs, seams and vertices tidy', () => {
+  const corners = (m: Model) => m.faces.flatMap((f) => f.uv);
+  const seamKeys = (m: Model) => {
+    const s = new Set<string>();
+    m.faces.forEach((f) => f.seam?.forEach((on, i) => { if (on) s.add(edgeKey(f.v[i], f.v[(i + 1) % f.v.length])); }));
+    return [...s].sort();
+  };
+  const markSeam = (m: Model, a: number, b: number) => m.faces.forEach((f) => {
+    const n = f.v.length;
+    f.v.forEach((v, i) => { if ((v === a && f.v[(i + 1) % n] === b) || (v === b && f.v[(i + 1) % n] === a)) { f.seam ??= f.v.map(() => false); f.seam[i] = true; } });
+  });
+
+  it('never shares one UV array between corners', () => {
+    for (const run of [
+      (m: Model) => ops.triangulateFaces(m, all(m)),
+      (m: Model) => ops.subdivide(m, all(m), false),
+      (m: Model) => ops.insetFaces(m, all(m), 0.2),
+      (m: Model) => { ops.triangulateFaces(m, all(m)); ops.quadify(m, all(m)); },
+    ]) {
+      const m = modelOf(prims.box(1, 1, 1));
+      run(m);
+      const list = corners(m);
+      expect(new Set(list).size).toBe(list.length);
+    }
+  });
+
+  it('keeps a seam on the same edge through subdivide, triangulate and collapse', () => {
+    const m = modelOf(prims.box(1, 1, 1));
+    const f0 = m.faces[0];
+    const a = f0.v[0], b = f0.v[1];
+    markSeam(m, a, b);
+    ops.triangulateFaces(m, all(m));
+    expect(seamKeys(m)).toEqual([edgeKey(a, b)]);
+    m.faces.forEach((f) => { expect(f.seam?.length ?? f.v.length).toBe(f.v.length); });
+    // Collapsing a vertex off the seam keeps the seam on its edge.
+    const other = m.verts.findIndex((_, i) => i !== a && i !== b && m.faces.some((f) => f.v.includes(i) && f.v.includes(a)));
+    const third = m.verts.findIndex((_, i) => i !== a && i !== b && i !== other && m.faces.some((f) => f.v.includes(i) && f.v.includes(other)));
+    ops.collapse(m, new Set([other, third]));
+    m.faces.forEach((f) => { expect(f.seam?.length ?? f.v.length).toBe(f.v.length); });
+  });
+
+  it('extruding a region leaves no loose vertices behind', () => {
+    const m = modelOf(prims.plane(2, 2, 2));
+    ops.extrudeFaces(m, all(m));
+    const used = new Set(m.faces.flatMap((f) => f.v));
+    expect(used.size).toBe(m.verts.length);
+  });
+
+  it('partial smooth subdivide leaves the unselected faces alone', () => {
+    const m = modelOf(prims.box(1, 1, 1));
+    const before = m.verts.map((v) => [...v.p]);
+    ops.subdivide(m, new Set([0]), true);
+    before.forEach((p, i) => p.forEach((x, k) => expect(m.verts[i].p[k]).toBeCloseTo(x, 9)));
+  });
+
+  it('mirror with weld only welds the mirrored piece', () => {
+    const m = modelOf(prims.box(1, 1, 1));
+    m.verts.forEach((v) => { v.p[0] += 0.5; });
+    // A separate piece with two coincident, deliberately split vertices on the mirror plane.
+    const g = makeGroup(m, 'Other', null).id;
+    const n = m.verts.length;
+    m.verts.push({ p: [0, 5, 0] }, { p: [0, 5, 0] }, { p: [0, 6, 0] }, { p: [0, 5, 1] });
+    m.faces.push({ v: [n, n + 2, n + 3], uv: [[0, 0], [1, 0], [0, 1]], g, s: 0 }, { v: [n + 1, n + 3, n + 2], uv: [[0, 0], [1, 0], [0, 1]], g, s: 0 });
+    const boxFaces = new Set(m.faces.map((f, i) => (f.g !== g ? i : -1)).filter((i) => i >= 0));
+    ops.mirrorFaces(m, boxFaces, 0, true);
+    // Its two split vertices are still two.
+    expect(new Set(m.faces.filter((f) => f.g === g).map((f) => f.v[0])).size).toBe(2);
+  });
+});
+
+describe('pen shapes', () => {
+  const circle = (n = 4): PenAnchor[] => {
+    // A circle from four smooth points, with the standard bezier handle length.
+    const k = 0.5523;
+    return [[1, 0], [0, 1], [-1, 0], [0, -1]].slice(0, n).map(([x, y]) => ({ p: [x, y] as V2, i: [y * k, -x * k] as V2, o: [-y * k, x * k] as V2 }));
+  };
+
+  it('traces bezier curves and keeps straight sides straight', () => {
+    const ring = sampleOutline(circle(), true, 16);
+    ring.forEach((p) => expect(Math.hypot(p[0], p[1])).toBeCloseTo(1, 2));
+    const square: PenAnchor[] = [[0, 0], [1, 0], [1, 1], [0, 1]].map(([x, y]) => ({ p: [x, y] as V2, i: [0, 0] as V2, o: [0, 0] as V2 }));
+    expect(sampleOutline(square, true, 16)).toEqual([[0, 0], [1, 0], [1, 1], [0, 1]]);
+  });
+
+  it('adds a point on a curve without changing its shape', () => {
+    const before = circle();
+    const after = insertAnchor(before, 0, 0.5);
+    expect(after.length).toBe(5);
+    expect(Math.hypot(...after[1].p)).toBeCloseTo(1, 2);
+    for (let t = 0; t <= 1; t += 0.25) {
+      // The first half of the old curve is now the whole of the new first curve.
+      const a = bezierAt(before[0], before[1], t / 2), b = bezierAt(after[0], after[1], t);
+      expect(a[0]).toBeCloseTo(b[0], 9); expect(a[1]).toBeCloseTo(b[1], 9);
+    }
+    expect(nearestOnOutline(after, [0, 1.2])!.d).toBeCloseTo(0.2, 2);
+  });
+
+  it('inflates an outline into a closed, all-quad solid with no poles', () => {
+    const outline = sampleOutline(circle(), true, 24);
+    for (const [rows, sides] of [[4, 8], [10, 16], [9, 13]]) {
+      const m = emptyModel();
+      ops.addPrim(m, quadSilhouette(outline, [0, 0, 0], [1, 0, 0], [0, 1, 0], rows, sides, true)!, 'Pen');
+      expect(m.faces.every((f) => f.v.length === 4)).toBe(true);
+      for (const faces of edgeFaces(m).values()) expect(faces.length).toBe(2);
+      // Wound outward, and close to a sphere of radius 1.
+      const vol = signedVolume(m, m.faces.keys());
+      // Even the coarsest, 4 rings by 8 sides, keeps most of it; flat faces always lose some.
+      expect(vol).toBeGreaterThan(0.75 * (4 / 3) * Math.PI);
+      expect(vol).toBeLessThan((4 / 3) * Math.PI);
+      // No vertex is shared by more than 4 faces: no star of triangles at the ends.
+      const valence = new Map<number, number>();
+      m.faces.forEach((f) => f.v.forEach((v) => valence.set(v, (valence.get(v) ?? 0) + 1)));
+      expect(Math.max(...valence.values())).toBeLessThanOrEqual(4);
+    }
+  });
+
+  it('blends smoothly through the three ring values without overshooting', () => {
+    const v: [number, number, number] = [0.4, 1, 0.6];
+    PEN_SECTIONS.forEach((t, k) => expect(profileAt(v, t)).toBeCloseTo(v[k], 9));
+    expect(profileAt(v, 0)).toBe(0.4);
+    expect(profileAt(v, 1)).toBe(0.6);
+    for (let t = 0; t <= 1; t += 0.01) {
+      const x = profileAt(v, t);
+      expect(x).toBeGreaterThanOrEqual(0.4 - 1e-9);
+      expect(x).toBeLessThanOrEqual(1 + 1e-9);
+    }
+  });
+
+  it('shapes depth and width at the bottom, middle and top rings', () => {
+    // A tall oval, so the long direction runs up the drawing plane and the top is +Y.
+    const tall = sampleOutline(circle(), true, 24).map(([x, y]): V2 => [x * 0.5, y]);
+    const near = (profile: ReturnType<typeof ROUND_PROFILE>, y: number, axis: 0 | 2) => {
+      const p = quadSilhouette(tall, [0, 0, 0], [1, 0, 0], [0, 1, 0], 16, 16, true, profile)!;
+      return Math.max(...p.verts.filter((v) => Math.abs(v[1] - y) < 0.15).map((v) => Math.abs(v[axis])));
+    };
+    const round = ROUND_PROFILE();
+    // Depth 1 is round: as deep as it is wide.
+    expect(near(round, 0, 2)).toBeCloseTo(near(round, 0, 0), 1);
+    // A thin top leaves the bottom and middle alone.
+    const thinTop: ReturnType<typeof ROUND_PROFILE> = { depth: [1, 1, 0.3], width: [1, 1, 1] };
+    expect(near(thinTop, 0.6, 2)).toBeLessThan(near(round, 0.6, 2) * 0.6);
+    expect(near(thinTop, -0.6, 2)).toBeCloseTo(near(round, -0.6, 2), 3);
+    expect(near(thinTop, 0, 2)).toBeCloseTo(near(round, 0, 2), 3);
+    // Width at the middle widens the sides there, without changing the depth.
+    const wide: ReturnType<typeof ROUND_PROFILE> = { depth: [1, 1, 1], width: [1, 2, 1] };
+    expect(near(wide, 0, 0)).toBeCloseTo(near(round, 0, 0) * 2, 1);
+    expect(near(wide, 0, 2)).toBeCloseTo(near(round, 0, 2), 3);
+  });
+
+  // An outline as a freehand stroke delivers it: points every few hundredths.
+  const dense = (poly: V2[], step = 0.03): V2[] => poly.flatMap((a, i) => {
+    const b = poly[(i + 1) % poly.length];
+    const n = Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / step));
+    return Array.from({ length: n }, (_, k): V2 => [a[0] + ((b[0] - a[0]) * k) / n, a[1] + ((b[1] - a[1]) * k) / n]);
+  });
+  const hand = dense([[-0.5, -1], [0.5, -1], [0.55, 0], [0.75, 0.1], [1.1, 0.5], [1.0, 0.6], [0.5, 0.3], [0.5, 0.4],
+    [0.5, 1.4], [0.32, 1.4], [0.3, 0.45], [0.22, 0.45], [0.2, 1.6], [0.02, 1.6], [0.0, 0.45], [-0.08, 0.45], [-0.1, 1.5], [-0.28, 1.5], [-0.3, 0.45], [-0.38, 0.45], [-0.4, 1.2], [-0.56, 1.2], [-0.55, 0]]);
+
+  it('finds the fingers and thumb of a drawn hand, and keeps the palm as the body', () => {
+    const { body, limbs } = splitOutline(hand);
+    expect(limbs.length).toBe(5);
+    // The palm stops at the finger roots, and each finger reaches its tip.
+    expect(Math.max(...body.map((p) => p[1]))).toBeLessThan(0.7);
+    const tops = limbs.map((l) => Math.max(...l.map((p) => p[1]))).sort((a, b) => a - b);
+    expect(tops.slice(1)).toEqual([1.2, 1.4, 1.5, 1.6].map((y) => expect.closeTo(y, 1)));
+    // The thumb points out to the side.
+    expect(limbs.some((l) => Math.max(...l.map((p) => p[0])) > 1)).toBe(true);
+  });
+
+  it('leaves plain shapes whole: no limbs from corners or ends', () => {
+    const circle = Array.from({ length: 80 }, (_, i): V2 => [Math.cos((i / 80) * Math.PI * 2), Math.sin((i / 80) * Math.PI * 2)]);
+    for (const o of [circle, dense([[-1, -1], [1, -1], [1, 1], [-1, 1]]), dense([[-0.4, -1.5], [0.4, -1.5], [0.4, 1.5], [-0.4, 1.5]])]) {
+      expect(splitOutline(o).limbs.length).toBe(0);
+    }
+    const ears = dense([[-1, 0], [-0.9, -0.5], [-0.5, -0.9], [0, -1], [0.5, -0.9], [0.9, -0.5], [1, 0], [0.9, 0.5], [0.7, 0.7], [0.75, 1.8], [0.5, 1.8], [0.4, 0.9], [0, 1], [-0.4, 0.9], [-0.5, 1.8], [-0.75, 1.8], [-0.7, 0.7], [-0.9, 0.5]]);
+    expect(splitOutline(ears).limbs.length).toBe(2);
+  });
+
+  it('inflates a hand into one closed, all-quad piece with every finger', () => {
+    const p = inflateParts(hand, [0, 0, 0], [1, 0, 0], [0, 1, 0], 10, 16, true)!;
+    const m = emptyModel();
+    ops.addPrim(m, p, 'Hand');
+    expect(m.faces.every((f) => f.v.length === 4)).toBe(true);
+    // Each part is a closed shell: every edge has a face on each side.
+    for (const faces of edgeFaces(m).values()) expect(faces.length).toBe(2);
+    // Something reaches each fingertip, rather than one tube filling the gaps.
+    for (const [x, y] of [[-0.48, 1.15], [-0.19, 1.45], [0.11, 1.55], [0.41, 1.35], [1.0, 0.52]]) {
+      expect(m.verts.some((v) => Math.hypot(v.p[0] - x, v.p[1] - y) < 0.12)).toBe(true);
+    }
+    // And nothing fills the gap between the first two fingers.
+    expect(m.verts.some((v) => Math.hypot(v.p[0] - 0.26, v.p[1] - 1.1) < 0.025)).toBe(false);
+  });
+
+  it("shapes each limb with its own rings, from root to tip", () => {
+    const { limbs, tips } = splitOutline(hand);
+    // The middle finger: the one reaching highest.
+    const i = limbs.findIndex((l) => Math.max(...l.map((p) => p[1])) > 1.55);
+    const widthNear = (profiles: ReturnType<typeof ROUND_PROFILE>[], y: number) => {
+      const p = inflateParts(hand, [0, 0, 0], [1, 0, 0], [0, 1, 0], 10, 16, true, ROUND_PROFILE(), profiles)!;
+      const xs = p.verts.filter((v) => Math.abs(v[1] - y) < 0.06 && v[0] > -0.02 && v[0] < 0.24).map((v) => v[0]);
+      return Math.max(...xs) - Math.min(...xs);
+    };
+    const plain: ReturnType<typeof ROUND_PROFILE>[] = [];
+    const thinTip = limbs.map((_, k) => (k === i ? { depth: [1, 1, 1], width: [1, 1, 0.3] } : ROUND_PROFILE())) as ReturnType<typeof ROUND_PROFILE>[];
+    // Near the tip it narrows; near the root it doesn't.
+    expect(widthNear(thinTip, 1.35)).toBeLessThan(widthNear(plain, 1.35) * 0.7);
+    expect(widthNear(thinTip, 0.75)).toBeCloseTo(widthNear(plain, 0.75), 2);
+    // Its tip is where its top ring goes.
+    const fr = penFrame(limbs[i], [0, 0, 0], [1, 0, 0], [0, 1, 0], tips[i])!;
+    expect(fr.section(fr.uOf(0.8))!.c[1]).toBeGreaterThan(fr.section(fr.uOf(0.2))!.c[1]);
+  });
+
+  it('puts the top at the end higher up the drawing plane, however it was drawn', () => {
+    const tall = sampleOutline(circle(), true, 24).map(([x, y]): V2 => [x * 0.5, y]);
+    const fr = penFrame(tall, [0, 0, 0], [1, 0, 0], [0, 1, 0])!;
+    expect(fr.section(fr.uOf(0.8))!.c[1]).toBeGreaterThan(0.4);
+    const flipped = penFrame(tall.slice().reverse(), [0, 0, 0], [1, 0, 0], [0, 1, 0])!;
+    expect(flipped.section(flipped.uOf(0.8))!.c[1]).toBeGreaterThan(0.4);
   });
 });
 
@@ -1778,6 +2001,34 @@ describe('file formats', () => {
     let worst = 0;
     oa.forEach((x, i) => { worst = Math.max(worst, Math.abs(x - ob[i])); });
     expect(worst).toBeLessThan(0.03);
+  });
+
+  it('MS3D keeps accented names, high smoothing groups and hold keys', () => {
+    const m = emptyModel();
+    ops.addPrim(m, prims.box(1, 1, 1), 'Körper');
+    m.faces.forEach((f) => { f.s = 255; });
+    m.bones.push({ id: 900, name: 'Hüfte', parent: null, head: [0, 0, 0] });
+    m.verts.forEach((v) => { v.w = [[900, 1]]; });
+    m.clips.push({ id: 901, name: 'c', fps: 30, length: 20, loop: false, tracks: { 900: { pos: [], rot: [{ f: 0, v: [0, 0, 0, 1], step: true }, { f: 10, v: qAxisAngle([0, 1, 0], Math.PI / 2) }] } } });
+    const bytes = exportMS3D(m);
+    const r = importMS3D(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer, 'x');
+    expect(r.groups[0].name).toBe('Körper');
+    expect(r.bones[0].name).toBe('Hüfte');
+    expect(r.faces.every((f) => f.s > 0)).toBe(true);
+    const tr = r.clips[0].tracks[r.bones[0].id];
+    sampleTrack(tr, 5).rot.forEach((x, i) => expect(x).toBeCloseTo([0, 0, 0, 1][i], 4));
+  });
+
+  it('OBJ blends normals across smoothing groups and keeps flat faces flat', () => {
+    const m = modelOf(prims.sphere(1, 8, 6));
+    m.faces.forEach((f) => { f.s = 1; });
+    const smooth = new TextDecoder().decode(exportOBJ(m, defaultExport, 'x').obj);
+    const count = (s: string) => s.split('\n').filter((l) => l.startsWith('vn ')).length;
+    // One normal per vertex, not one per face.
+    expect(count(smooth)).toBe(m.verts.length);
+    m.faces.forEach((f) => { f.s = 0; });
+    const flat = new TextDecoder().decode(exportOBJ(m, defaultExport, 'x').obj);
+    expect(count(flat)).toBeGreaterThan(m.verts.length);
   });
 
   it('MS3D rejects bad files and over-limit models', () => {

@@ -1,6 +1,7 @@
 // Organic shapes for blocking out: character parts, freehand tubes and drawn silhouettes.
 // Each is a stack of rings closed by a point at each end, so detail is just how many rings and sides it gets.
 import { add, cross, dist, dot, norm, sub } from './geom';
+import { splitOutline } from './limbs';
 import type { Prim } from './primitives';
 import type { V2, V3 } from './types';
 
@@ -359,4 +360,212 @@ export function silhouette(outline: V2[], origin: V3, right: V3, up: V3, rows = 
   if (!rings.length) return null;
   const endV = (u: number) => local.reduce((best, p) => (Math.abs(p[0] - u) < Math.abs(best[0] - u) ? p : best), local[0])[1];
   return loft(toWorld(lo, endV(lo)), rings, toWorld(hi, endV(hi)), sides, smooth);
+}
+
+// ---------- pen shapes ----------
+/** Depth and width at the bottom, middle and top of a pen shape, as shares of the drawn width. */
+export interface PenProfile { depth: [number, number, number]; width: [number, number, number] }
+export const ROUND_PROFILE = (): PenProfile => ({ depth: [1, 1, 1], width: [1, 1, 1] });
+/** Where the bottom, middle and top rings sit, as shares of the length from the bottom end. */
+export const PEN_SECTIONS = [0.2, 0.5, 0.8] as const;
+
+/** A smooth curve through the three values at PEN_SECTIONS, level beyond the outer two. Never overshoots. */
+export function profileAt(v: readonly [number, number, number], t: number): number {
+  const T = PEN_SECTIONS;
+  if (t <= T[0]) return v[0];
+  if (t >= T[2]) return v[2];
+  const k = t < T[1] ? 0 : 1;
+  const s = (t - T[k]) / (T[k + 1] - T[k]);
+  // Hermite with a level tangent at the ends and, in the middle, the average slope, or level at a peak or dip.
+  const d0 = (v[1] - v[0]) / (T[1] - T[0]), d1 = (v[2] - v[1]) / (T[2] - T[1]);
+  const mid = d0 * d1 > 0 ? (d0 + d1) / 2 : 0;
+  const m0 = k === 0 ? 0 : mid, m1 = k === 0 ? mid : 0;
+  const h = T[k + 1] - T[k];
+  const s2 = s * s, s3 = s2 * s;
+  return (2 * s3 - 3 * s2 + 1) * v[k] + (s3 - 2 * s2 + s) * h * m0 + (-2 * s3 + 3 * s2) * v[k + 1] + (s3 - s2) * h * m1;
+}
+
+/**
+ * How a pen outline lies: its long direction, the cross-section at any point along it, and which end is the top.
+ * Shared by the shape builder and by the tool, which draws its rings with it.
+ */
+export function penFrame(outline: V2[], origin: V3, right: V3, up: V3, topToward?: V2) {
+  if (outline.length < 3) return null;
+  const cx = outline.reduce((s, p) => s + p[0], 0) / outline.length, cy = outline.reduce((s, p) => s + p[1], 0) / outline.length;
+  let xx = 0, xy = 0, yy = 0;
+  for (const [a, b] of outline) { xx += (a - cx) ** 2; xy += (a - cx) * (b - cy); yy += (b - cy) ** 2; }
+  const ang = 0.5 * Math.atan2(2 * xy, xx - yy);
+  const ax: V2 = [Math.cos(ang), Math.sin(ang)], ay: V2 = [-ax[1], ax[0]];
+  const local = outline.map(([a, b]): V2 => [(a - cx) * ax[0] + (b - cy) * ax[1], (a - cx) * ay[0] + (b - cy) * ay[1]]);
+  const us = local.map((p) => p[0]);
+  const lo = Math.min(...us), hi = Math.max(...us);
+  if (hi - lo < 1e-4) return null;
+  const toWorld = (u: number, v: number): V3 => {
+    const a = cx + ax[0] * u + ay[0] * v, b = cy + ax[1] * u + ay[1] * v;
+    return [origin[0] + right[0] * a + up[0] * b, origin[1] + right[1] * a + up[1] * b, origin[2] + right[2] * a + up[2] * b];
+  };
+  const span = (u: number): [number, number] | null => {
+    let a = Infinity, b = -Infinity;
+    for (let i = 0; i < local.length; i++) {
+      const p = local[i], q = local[(i + 1) % local.length];
+      if ((p[0] <= u) === (q[0] <= u)) continue;
+      const v = p[1] + ((u - p[0]) / (q[0] - p[0])) * (q[1] - p[1]);
+      a = Math.min(a, v); b = Math.max(b, v);
+    }
+    return Number.isFinite(a) ? [a, b] : null;
+  };
+  const dirV = norm([right[0] * ay[0] + up[0] * ay[1], right[1] * ay[0] + up[1] * ay[1], right[2] * ay[0] + up[2] * ay[1]]);
+  const dirU = norm([right[0] * ax[0] + up[0] * ax[1], right[1] * ax[0] + up[1] * ax[1], right[2] * ax[0] + up[2] * ax[1]]);
+  const normal = cross(dirU, dirV);
+  const endV = (u: number) => local.reduce((best, p) => (Math.abs(p[0] - u) < Math.abs(best[0] - u) ? p : best), local[0])[1];
+  // The top is the end nearer `topToward` when given, like a limb's tip; otherwise the end higher up the plane.
+  const endAt = (u: number): V2 => [cx + ax[0] * u + ay[0] * endV(u), cy + ax[1] * u + ay[1] * endV(u)];
+  const hiIsTop = topToward
+    ? Math.hypot(endAt(hi)[0] - topToward[0], endAt(hi)[1] - topToward[1]) <= Math.hypot(endAt(lo)[0] - topToward[0], endAt(lo)[1] - topToward[1])
+    : endAt(hi)[1] >= endAt(lo)[1];
+  /** From 0 at the bottom end to 1 at the top. */
+  const tOf = (u: number) => (hiIsTop ? (u - lo) / (hi - lo) : (hi - u) / (hi - lo));
+  const uOf = (t: number) => (hiIsTop ? lo + (hi - lo) * t : hi - (hi - lo) * t);
+  /** The cross-section at a point along the length: its centre and half the drawn width there. */
+  const section = (u: number) => {
+    const s = span(u);
+    if (!s) return null;
+    return { c: toWorld(u, (s[0] + s[1]) / 2), half: Math.max((s[1] - s[0]) / 2, (hi - lo) * 1e-3) };
+  };
+  return { lo, hi, toWorld, endV, dirV, normal, tOf, uOf, section };
+}
+
+/**
+ * Inflate a drawn outline into an all-quad solid, for the Pen Shape tool. Like silhouette, it stacks oval rings
+ * along the outline's longest direction, but spaces them like a sphere's latitudes, so rounded ends stay evenly
+ * faceted, and closes each end with a small grid of quads instead of a pole. Every face is a quad, so edge loops
+ * run cleanly around and along the piece. `sides` is rounded to a multiple of 4, which the end grids need.
+ * `profile` sets the depth and width at the bottom, middle and top, blending smoothly between them.
+ */
+export function quadSilhouette(outline: V2[], origin: V3, right: V3, up: V3, rows = 8, sides = 16, smooth = true, profile: PenProfile = ROUND_PROFILE(), topToward?: V2): Prim | null {
+  const fr = penFrame(outline, origin, right, up, topToward);
+  if (!fr) return null;
+  const { lo, hi, toWorld, endV, dirV, normal } = fr;
+  // Rings at sphere-like latitudes: closer together toward the ends, where the outline turns fastest.
+  const n = Math.max(2, Math.round(rows));
+  const rings: Ring[] = [];
+  for (let i = 1; i <= n; i++) {
+    const u = lo + ((hi - lo) * (1 - Math.cos((Math.PI * i) / (n + 1)))) / 2;
+    const s = fr.section(u);
+    if (!s) continue;
+    const t = fr.tOf(u);
+    const rx = s.half * Math.max(0.02, profileAt(profile.width, t));
+    const rz = s.half * Math.max(0.02, profileAt(profile.depth, t));
+    rings.push({ c: s.c, x: dirV, z: normal, rx, rz });
+  }
+  if (rings.length < 1) return null;
+  const tips: [V3, V3] = [toWorld(lo, endV(lo)), toWorld(hi, endV(hi))];
+
+  const k = Math.max(2, Math.round(Math.max(8, sides) / 4));
+  const m = 4 * k;
+  const verts: V3[] = [];
+  const faces: Prim['faces'] = [];
+  const ringAt = (r: Ring, a: number): [number, number] => [Math.cos(a) * r.rx, Math.sin(a) * r.rz];
+  const place = (r: Ring, x: number, z: number, lift: V3 = [0, 0, 0]): V3 => [
+    r.c[0] + r.x[0] * x + r.z[0] * z + lift[0], r.c[1] + r.x[1] * x + r.z[1] * z + lift[1], r.c[2] + r.x[2] * x + r.z[2] * z + lift[2],
+  ];
+  const ringStart: number[] = [];
+  rings.forEach((r) => {
+    ringStart.push(verts.length);
+    for (let j = 0; j < m; j++) { const [x, z] = ringAt(r, (j / m) * Math.PI * 2); verts.push(place(r, x, z)); }
+  });
+  const rid = (i: number, j: number) => ringStart[i] + (((j % m) + m) % m);
+  const vOf = (i: number) => 1 - (i + 1) / (rings.length + 1);
+
+  // Sides: quads between neighbouring rings, wound outward (away from the ring centre).
+  const sideFaces: Prim['faces'] = [];
+  for (let i = 0; i + 1 < rings.length; i++) {
+    for (let j = 0; j < m; j++) {
+      sideFaces.push({ v: [rid(i, j), rid(i, j + 1), rid(i + 1, j + 1), rid(i + 1, j)], uv: [[j / m, vOf(i)], [(j + 1) / m, vOf(i)], [(j + 1) / m, vOf(i + 1)], [j / m, vOf(i + 1)]] });
+    }
+  }
+  if (sideFaces.length) {
+    const f = sideFaces[0];
+    const fn = faceNormalOf(verts, f.v);
+    const mid = verts[f.v[0]];
+    const out = sub(mid, rings[0].c);
+    if (dot(fn, out) < 0) sideFaces.forEach((x) => { x.v.reverse(); x.uv.reverse(); });
+  }
+  faces.push(...sideFaces);
+
+  // Each end: a k × k grid of quads filling the last ring (a Coons patch), domed out to the tip.
+  const cap = (ri: number, tip: V3, vEnd: number) => {
+    const r = rings[ri];
+    const R = (t: number) => ringAt(r, (((t % m) + m) % m / m) * Math.PI * 2);
+    const B = (i: number) => R(i), Rt = (j: number) => R(k + j), T = (i: number) => R(3 * k - i), L = (j: number) => R(4 * k - j);
+    const P00 = R(0), P10 = R(k), P11 = R(2 * k), P01 = R(3 * k);
+    const lift = sub(tip, r.c);
+    const grid: number[][] = [];
+    for (let i = 0; i <= k; i++) {
+      grid.push([]);
+      for (let j = 0; j <= k; j++) {
+        if (j === 0) { grid[i].push(rid(ri, i)); continue; }
+        if (i === k) { grid[i].push(rid(ri, k + j)); continue; }
+        if (j === k) { grid[i].push(rid(ri, 3 * k - i)); continue; }
+        if (i === 0) { grid[i].push(rid(ri, 4 * k - j)); continue; }
+        const s = i / k, t = j / k;
+        const x = (1 - t) * B(i)[0] + t * T(i)[0] + (1 - s) * L(j)[0] + s * Rt(j)[0]
+          - ((1 - s) * (1 - t) * P00[0] + s * (1 - t) * P10[0] + (1 - s) * t * P01[0] + s * t * P11[0]);
+        const z = (1 - t) * B(i)[1] + t * T(i)[1] + (1 - s) * L(j)[1] + s * Rt(j)[1]
+          - ((1 - s) * (1 - t) * P00[1] + s * (1 - t) * P10[1] + (1 - s) * t * P01[1] + s * t * P11[1]);
+        // A round dome: full height at the middle, none at the ring.
+        const e = Math.min(1, Math.hypot(x / (r.rx || 1), z / (r.rz || 1)));
+        const hgt = Math.sqrt(Math.max(0, 1 - e * e));
+        grid[i].push(verts.length);
+        verts.push(place(r, x, z, [lift[0] * hgt, lift[1] * hgt, lift[2] * hgt]));
+      }
+    }
+    const capFaces: Prim['faces'] = [];
+    for (let i = 0; i < k; i++) for (let j = 0; j < k; j++) {
+      capFaces.push({ v: [grid[i][j], grid[i + 1][j], grid[i + 1][j + 1], grid[i][j + 1]], uv: [[i / k, vEnd], [(i + 1) / k, vEnd], [(i + 1) / k, vEnd], [i / k, vEnd]] });
+    }
+    // Wind the cap to face its tip.
+    const c = capFaces[Math.floor(capFaces.length / 2)];
+    if (dot(faceNormalOf(verts, c.v), lift) < 0) capFaces.forEach((x) => { x.v.reverse(); x.uv.reverse(); });
+    faces.push(...capFaces);
+  };
+  cap(0, tips[0], 1);
+  cap(rings.length - 1, tips[1], 0);
+  return { verts, faces, smooth };
+}
+
+/**
+ * Inflate a drawn outline that may have limbs, like a hand's fingers: the body and each limb become their own
+ * quadSilhouette, each along its own direction, overlapping where they join, all in one piece. `profile` shapes
+ * the body. Each limb has its own profile, running from its root (bottom) to its tip (top), whose depths are
+ * shares of the body's middle depth, so the whole thing thickens and thins together.
+ */
+export function inflateParts(outline: V2[], origin: V3, right: V3, up: V3, rows = 8, sides = 16, smooth = true, profile: PenProfile = ROUND_PROFILE(), limbProfiles: PenProfile[] = []): Prim | null {
+  const { body, limbs, tips } = splitOutline(outline);
+  const main = quadSilhouette(body, origin, right, up, rows, sides, smooth, profile);
+  if (!main) return null;
+  const extent = (o: V2[]) => { let a = Infinity, b = -Infinity, c = Infinity, d = -Infinity; for (const [x, y] of o) { a = Math.min(a, x); b = Math.max(b, x); c = Math.min(c, y); d = Math.max(d, y); } return Math.max(b - a, d - c); };
+  const bodySize = extent(body);
+  const verts = main.verts.slice(), faces = main.faces.slice();
+  limbs.forEach((limb, i) => {
+    // Fewer rings along a shorter limb, so it keeps the body's spacing.
+    const r = Math.max(3, Math.round((rows * extent(limb)) / Math.max(bodySize, 1e-9)));
+    const own = limbProfiles[i] ?? ROUND_PROFILE();
+    const d = profile.depth[1];
+    const p = quadSilhouette(limb, origin, right, up, r, sides, smooth, { depth: own.depth.map((x) => x * d) as [number, number, number], width: own.width }, tips[i]);
+    if (!p) return;
+    const off = verts.length;
+    verts.push(...p.verts);
+    faces.push(...p.faces.map((f) => ({ v: f.v.map((v) => v + off), uv: f.uv })));
+  });
+  return { verts, faces, smooth };
+}
+
+function faceNormalOf(verts: V3[], f: number[]): V3 {
+  let n: V3 = [0, 0, 0];
+  for (let i = 0; i < f.length; i++) {
+    const a = verts[f[i]], b = verts[f[(i + 1) % f.length]];
+    n = add(n, [(a[1] - b[1]) * (a[2] + b[2]), (a[2] - b[2]) * (a[0] + b[0]), (a[0] - b[0]) * (a[1] + b[1])]);
+  }
+  return norm(n);
 }

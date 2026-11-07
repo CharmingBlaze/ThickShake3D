@@ -46,13 +46,16 @@ npm run e2e
 | Pan up or down (perspective) | Shift + Alt + right drag |
 | Zoom | Wheel, or Ctrl + Alt + drag: up or right zooms in |
 | Pan, rotate, zoom buttons | Drag the buttons in a pane's upper-right corner |
-| Pan by keyboard | Arrows move 1 grid square; Shift 4; Alt a tenth, or the snap step when snapping is on; Alt + Shift 10 times Alt |
+| Move selection by keyboard | With something selected, arrows move it a tenth of a grid square (or one snap step) along the axis that points that way in the view under the mouse; Shift moves a tenth as far. Quick presses undo as one move |
+| Pan by keyboard | With nothing selected, arrows move 1 grid square; Shift 4. Alt pans a tenth, or the snap step when snapping is on, whatever is selected; Alt + Shift 10 times Alt |
 | Zoom by keyboard | `.` in, `,` out; hold Shift for double |
-| Center view at mouse | G |
+| Center view at mouse | V |
 | Fit all / selected | A / Shift + A |
 | Change view | Numpad 1 Back/Front, 2 Top/Bottom, 3 Right/Left, 4 Perspective |
 | Select | Click or drag a box; Shift adds, Ctrl removes |
-| Tools | Q select, W move, E rotate, R scale, T extrude, J joint, B weight paint |
+| Tools | Q select, W move, E rotate, T extrude, J joint, B weight paint, C sculpt. The Scale tool is in the toolbar |
+| Move, rotate, scale like Blender | G, R or S over a view: the selection follows the mouse. G moves it in the view's plane, R turns it as you circle the mouse around it, S scales it by your distance from it |
+| While moving, rotating or scaling | X, Y or Z locks an axis (Shift for the other two; the same key again unlocks). Type a number for an exact distance, angle in degrees or factor. Ctrl snaps, Shift is fine. Click or Enter keeps it, Esc or right click cancels |
 | Modes | 1 vertex, 2 edge, 3 face, 4 group, 5 joint |
 | Frame selection / all | Z / Home |
 | Maximize pane | Space or Numpad 0 |
@@ -72,6 +75,16 @@ Pick a shape from the Create menu or the toolbar, then:
 
 Create > Low Poly uses minimal segments with flat shading. Create > Draw on Surface builds the shape on the face under the start of the drag, along that face's normal.
 
+## Extruding
+
+It works the way SketchUp's Push/Pull and Blender's extrude do.
+
+- **Push/Pull:** with the Extrude tool, the face under the mouse lights up. Drag it to pull it out or push it in. A face that's part of the selection takes the whole selection with it.
+- **Click and move:** click a face without dragging, move the mouse, then click again to set the distance.
+- **Extrude the selection (T):** press T over a view with faces selected, and they extrude and follow the mouse straight away. Click or press Enter to keep it.
+- **While extruding:** type a distance for an exact one, then press Enter. Ctrl toggles snapping, Shift gives fine control, and Alt pushes along vertex normals. Esc or a right click puts everything back.
+- **Repeat:** double-click a face to extrude it by the last distance again.
+
 ## Cutting
 
 Both tools work the way Blender's do. Pressed on the keyboard they do one job and hand back the tool you were using. Picked from the toolbar or Mesh menu they stay on.
@@ -89,14 +102,22 @@ Start from a Character, Chibi or Creature body made of named pieces, or from not
 To work over a drawing or photo, press Front, Side, Top or Back under Reference images, or drop a picture onto a view. Drag it into place and scale it by a corner, then pick a shape. It shows behind that view and stands in the perspective view too. See-through pieces lets you trace it. Pictures are saved with the project and never exported.
 
 1. Pick a body part (Head, Torso, Arm, Leg, Hand, Foot, Ear, Horn, Tail or Wing) and drag from one end of it to the other, such as chin to crown or shoulder to wrist. The Limb tool does the same for plain limbs.
-2. For anything else organic, Tube turns a freehand line into a rounded tube for tentacles or hair, Draw Shape inflates a drawn outline into a solid, and Lathe spins half an outline around the centre line. Other shapes drag out as an outline in one view and then depth in another. The Create menu has every shape, including wedges, stairs and doorways.
-3. Shape pieces with the Sculpt brush (S): Grab, Inflate, Smooth, Flatten and Pinch. Taper, Bend and Twist reshape a whole piece. Round Off smooths a blocky piece, and Lower Poly simplifies one. Fuse melts overlapping pieces into one seamless mesh, and a low Detail gives a low-poly result.
-4. Set Detail to Low Poly for chunky, flat-shaded pieces, or Medium or High for smooth ones.
-5. Start a drag on an existing piece to attach to it.
-6. With Symmetry across X on, finishing a piece on one side adds its other side, and moving a piece moves its mirror image too. Mirror adds the other side to a piece you already have.
-7. Move, rotate and scale whole pieces with W, E and R. Shift+D duplicates and picks up a copy, and Array repeats a piece in a line for fingers or ribs, Radial repeats one around a centre for petals or spikes, and Isolate (Alt+I) hides everything else while you work.
-8. Snapping, measurements and a size reference are in the panel's Precision section, off or out of the way until you want them.
-9. Join combines pieces, and Colours to Materials keeps the colours when you export.
+2. For anything else organic, Tube turns a freehand line into a rounded tube for tentacles or hair, Draw Shape inflates a freehand outline into a solid you shape with the same three rings as Pen Shape below (Enter finishes, Esc cancels, and drawing again starts the next one), and Lathe spins half an outline around the centre line. Other shapes drag out as an outline in one view and then depth in another. The Create menu has every shape, including wedges, stairs and doorways.
+3. **Pen Shape** draws an outline the way a vector pen does, then inflates it. Click for a corner, or drag for a curve. Click the first point, or press Enter, to close the outline.
+   - **Reshaping:** drag points and handles. Click the outline to add a point, double-click a point to switch it between smooth and sharp, and Alt-drag a handle to break it. Backspace removes a point and Ctrl+Z steps back.
+   - **Shaping:** closing the outline builds the piece straight away, and it follows the outline live as you reshape it.
+     - Three coloured rings sit around it: blue at the top, green in the middle, pink at the bottom. Pull a round handle to set the width at that ring, or a square one to set the depth. Depth handles face you in the view you drew in, so use a side or perspective view for them.
+     - The shape blends smoothly between the rings. Ctrl steps by 0.05, and double-clicking a handle sets it back to round.
+   - **Finishing:** Enter, Space, a double-click or a right click. On an open outline these close it first, ready for shaping. Esc throws the piece away.
+   - **The piece:** all quads, with rings along its length and a grid at each end instead of a pole, so it's ready to edit. Each ring's depth and width, Rings, Sides and Smooth stay adjustable in the panel afterward.
+   - **Limbs:** parts that stick out and are clearly thinner than the body, like fingers, a thumb or ears, become their own round tubes along their own direction, reaching a little into the body so there's no crease. Each limb gets its own three rings, pink at the root, green in the middle and blue at the tip, with smaller handles: taper a fingertip or fatten a thumb. A limb's depth follows the body's, so thickening the body thickens its limbs too. It all stays one piece; Fuse melts it into a single mesh if you want one. Draw Shape does the same.
+4. Shape pieces with the Sculpt brush (C): Grab, Inflate, Smooth, Flatten and Pinch. Taper, Bend and Twist reshape a whole piece. Round Off smooths a blocky piece, and Lower Poly simplifies one. Fuse melts overlapping pieces into one seamless mesh, and a low Detail gives a low-poly result.
+5. Set Detail to Low Poly for chunky, flat-shaded pieces, or Medium or High for smooth ones.
+6. Start a drag on an existing piece to attach to it.
+7. With Symmetry across X on, finishing a piece on one side adds its other side, and moving a piece moves its mirror image too. Mirror adds the other side to a piece you already have.
+8. Move, rotate and scale whole pieces with W, E and R. Shift+D duplicates and picks up a copy, and Array repeats a piece in a line for fingers or ribs, Radial repeats one around a centre for petals or spikes, and Isolate (Alt+I) hides everything else while you work.
+9. Snapping, measurements and a size reference are in the panel's Precision section, off or out of the way until you want them.
+10. Join combines pieces, and Colours to Materials keeps the colours when you export.
 
 ## Materials
 
@@ -118,10 +139,10 @@ All of this exports to GLB as standard glTF. Clearcoat, sheen, glass, unlit and 
 
 Open the UV workspace (Ctrl+2). Select faces in the 3D view to choose what the editor shows.
 
-1. Press U or Auto Unwrap. There are no seams to mark: it finds where to cut by itself, along the sharpest creases, and flattens with as little distortion as it can. Raise Max stretch in its panel for fewer islands, or lower it for less distortion.
-2. Check the layout with View > Show Stretch and the overlap warnings below the editor. Press M for Minimize Stretch to even out distortion.
-3. To place things by hand, pin points with N, turn on Pins > Live Unwrap, and drag a pin. The island re-solves around it, and pinned points hold through later unwraps.
-4. Press P over the editor to pack the islands, or set a density with Arrange > Set Texel Density.
+2. Press U or Auto Unwrap. There are no seams to mark: it finds where to cut by itself, along the sharpest creases, and flattens with as little distortion as it can. Raise Max stretch in its panel for fewer islands, or lower it for less distortion.
+3. Check the layout with View > Show Stretch and the overlap warnings below the editor. Press M for Minimize Stretch to even out distortion.
+4. To place things by hand, pin points with N, turn on Pins > Live Unwrap, and drag a pin. The island re-solves around it, and pinned points hold through later unwraps.
+5. Press P over the editor to pack the islands, or set a density with Arrange > Set Texel Density.
 
 Seams are optional: to force a cut somewhere, select edges or faces and press Alt+S.
 
@@ -146,11 +167,11 @@ View > Export UV Layout saves the wireframe as a transparent PNG to paint over.
 
 Open the Rigging workspace (Ctrl+3).
 
-1. Build the skeleton: Rig > Add Humanoid Skeleton fits a named T-pose to the mesh, or the Joint tool (J) draws chains. Mirror Joints copies one side to the other.
-2. Press Auto-weight all. Surface heat, the default, spreads each joint's influence along connected skin, so a leg doesn't pull on the leg beside it. Distance is there as an alternative.
-3. Press Test pose and rotate joints to check the bends. It needs no clip and isn't saved.
-4. Fix what you see with the weight brush (B): Shift subtracts, Ctrl smooths, `[` and `]` resize, and Mirror X paints both sides. Select vertices for exact numbers in the Rig panel.
-5. Finish with Mirror, Smooth and Clean up. The panel warns about vertices with no weight.
+2. Build the skeleton: Rig > Add Humanoid Skeleton fits a named T-pose to the mesh, or the Joint tool (J) draws chains. Mirror Joints copies one side to the other.
+3. Press Auto-weight all. Surface heat, the default, spreads each joint's influence along connected skin, so a leg doesn't pull on the leg beside it. Distance is there as an alternative.
+4. Press Test pose and rotate joints to check the bends. It needs no clip and isn't saved.
+5. Fix what you see with the weight brush (B): Shift subtracts, Ctrl smooths, `[` and `]` resize, and Mirror X paints both sides. Select vertices for exact numbers in the Rig panel.
+6. Finish with Mirror, Smooth and Clean up. The panel warns about vertices with no weight.
 
 Deleting a joint passes its children and weights to its parent.
 

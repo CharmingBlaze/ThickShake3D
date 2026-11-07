@@ -17,8 +17,29 @@ export function exportOBJ(m: Model, o: ExportOptions, baseName: string): { obj: 
   const uvLines: string[] = [];
   const nrmLines: string[] = [];
   const body: string[] = [];
-  let nrmCount = 0;
-  for (const g of exportGroups(m, o)) {
+  // Importers take vn as the shading normal, so smoothed faces need normals blended across their
+  // smoothing group; flat faces (s = 0) use their own.
+  const groups = exportGroups(m, o);
+  const exported = new Set(groups.map((g) => g.id));
+  const blended = new Map<string, V3>();
+  for (const f of m.faces) {
+    if (!f.s || !exported.has(f.g)) continue;
+    const n = faceNormal(m, f);
+    for (const v of f.v) {
+      const k = `${v}|${f.s}`;
+      const e = blended.get(k);
+      if (e) { e[0] += n[0]; e[1] += n[1]; e[2] += n[2]; } else blended.set(k, [n[0], n[1], n[2]]);
+    }
+  }
+  const nrmIndex = new Map<string, number>();
+  const normalRef = (n: V3) => {
+    const l = Math.hypot(n[0], n[1], n[2]) || 1;
+    const line = `vn ${fmt(n[0] / l)} ${fmt(n[1] / l)} ${fmt(n[2] / l)}`;
+    let k = nrmIndex.get(line);
+    if (k === undefined) { k = nrmIndex.size + 1; nrmIndex.set(line, k); nrmLines.push(line); }
+    return k;
+  };
+  for (const g of groups) {
     const faces = m.faces.filter((f) => f.g === g.id);
     if (!faces.length) continue;
     body.push(`g ${safe(g.name)}`);
@@ -27,10 +48,9 @@ export function exportOBJ(m: Model, o: ExportOptions, baseName: string): { obj: 
     let curS = -1;
     for (const f of faces) {
       if (f.s !== curS) { body.push(`s ${f.s || 'off'}`); curS = f.s; }
-      const n = faceNormal(m, f);
-      nrmLines.push(`vn ${fmt(n[0])} ${fmt(n[1])} ${fmt(n[2])}`);
-      nrmCount++;
+      const flat = f.s ? 0 : normalRef(faceNormal(m, f));
       const corners = f.v.map((v, i) => {
+        const nrmCount = f.s ? normalRef(blended.get(`${v}|${f.s}`)!) : flat;
         const u = f.uv[i] ?? [0, 0];
         // OBJ's V axis runs up from the image bottom; ours runs down from the top.
         const uv = `${fmt(u[0])} ${fmt(1 - u[1])}`;

@@ -5,7 +5,7 @@ import { type Clip, type Model, cloneModel, emptyModel } from './types';
 
 export type ChangeKind = 'topology' | 'geometry' | 'selection' | 'materials' | 'groups' | 'skeleton' | 'anim' | 'time' | 'tool' | 'view' | 'file' | 'history';
 export type SelMode = 'vertex' | 'edge' | 'face' | 'group' | 'bone';
-export type ToolId = 'select' | 'move' | 'rotate' | 'scale' | 'extrude' | 'vertex' | 'face' | 'box' | 'sphere' | 'geosphere' | 'cylinder' | 'cone' | 'pyramid' | 'plane' | 'torus' | 'limb' | 'part' | 'stroke' | 'blob' | 'lathe' | 'sculpt' | 'capsule' | 'tapered' | 'wedge' | 'stairs' | 'doorway' | 'joint' | 'ik' | 'paint' | 'loopcut' | 'knife';
+export type ToolId = 'select' | 'move' | 'rotate' | 'scale' | 'extrude' | 'vertex' | 'face' | 'box' | 'sphere' | 'geosphere' | 'cylinder' | 'cone' | 'pyramid' | 'plane' | 'torus' | 'limb' | 'part' | 'stroke' | 'blob' | 'pen' | 'lathe' | 'sculpt' | 'capsule' | 'tapered' | 'wedge' | 'stairs' | 'doorway' | 'joint' | 'ik' | 'paint' | 'loopcut' | 'knife';
 export type Workspace = 'block' | 'model' | 'uv' | 'rig' | 'animate';
 
 export interface OpParam { key: string; label: string; type: 'number' | 'bool' | 'choice'; value: any; min?: number; max?: number; step?: number; options?: [any, string][] }
@@ -80,7 +80,7 @@ export class Editor {
   blobDepth = 0.8;
   /** Sculpt brush. Grab drags the surface, Inflate swells it, Smooth evens it out. */
   sculpt = { mode: 'grab' as 'grab' | 'inflate' | 'smooth' | 'flatten' | 'pinch', radius: 60, strength: 0.5 };
-  blockDims = true;
+  blockDims = false;
   /** Pieces drawn see-through, so a reference image shows behind them. */
   blockGhost = false;
   refActive: number | null = null;
@@ -185,6 +185,18 @@ export class Editor {
     this.sanitize();
     this.emitAll();
   }
+  /** Re-apply the last op to its original base, for when something it reads from outside has changed. */
+  rerunLastOp() {
+    const op = this.lastOp;
+    if (!op) return;
+    this.model = cloneModel(op.base);
+    this.restoreSel(op.baseSel);
+    op.run(this.model, Object.fromEntries(op.params.map((x) => [x.key, x.value])));
+    this.sanitize();
+    this.dirty = true;
+    this.emitAll();
+  }
+
   /** Change a parameter of the last op and re-apply it to its original base. */
   adjustLastOp(key: string, value: any) {
     const op = this.lastOp;
@@ -197,6 +209,11 @@ export class Editor {
     this.sanitize();
     this.dirty = true;
     this.emitAll();
+  }
+
+  /** Fold the latest undo step into the one before it, so a burst of small edits undoes in one go. */
+  squashLast() {
+    if (this.undoStack.length >= 2) this.undoStack.pop();
   }
 
   get canUndo() { return this.undoStack.length > 0; }
