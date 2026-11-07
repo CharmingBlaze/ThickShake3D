@@ -1,23 +1,38 @@
 // Textures as editable pixels, shared by the Paint and Tile workspaces: which texture a face shows, loading it into a
 // canvas, showing edits in the views as they happen, and saving them as one undo step.
 import { ed } from '../core/editor';
-import { cloneModel, makeMaterial, newId, uniqueName, type Material, type Model, type Texture, type V2, type V3 } from '../core/types';
+import { cloneModel, makeMaterial, newId, uniqueName, type Material, type Model, type TexLayer, type Texture, type V2, type V3 } from '../core/types';
 import { triangulateFace } from '../core/geom';
 import { remapPixels } from '../core/paint';
 import { projectScreen } from '../core/uv';
 import { liveTextures } from '../view/materialView';
 import { app } from './app';
 
-/** A texture being edited: its pixels, and the canvas views show while it's being painted. */
+/** One paint layer: its own pixels, and how it combines with the rest. */
+export interface DocLayer {
+  name: string;
+  opacity: number;
+  visible: boolean;
+  canvas: HTMLCanvasElement;
+  ctx: CanvasRenderingContext2D;
+  img: ImageData;
+}
+
+/**
+ * A texture being edited: its layers, the one tools paint on, and the combined canvas the views show. `img` is the
+ * active layer's pixels, so tools work on that layer.
+ */
 export interface TexDoc {
   texId: number;
-  /** The saved image these pixels came from, or were last saved as. */
+  /** The saved combined image these pixels came from, or were last saved as. */
   url: string;
   w: number;
   h: number;
   canvas: HTMLCanvasElement;
   ctx: CanvasRenderingContext2D;
-  img: ImageData;
+  layers: DocLayer[];
+  active: number;
+  readonly img: ImageData;
 }
 
 const docs = new Map<number, TexDoc>();
@@ -60,6 +75,18 @@ export function workingTexture(): Texture | null {
   return null;
 }
 
+function makeLayer(name: string, w: number, h: number, opacity = 1, visible = true, from?: CanvasImageSource): DocLayer {
+  const canvas = document.createElement('canvas');
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
+  if (from) ctx.drawImage(from, 0, 0);
+  return { name, opacity, visible, canvas, ctx, img: ctx.getImageData(0, 0, w, h) };
+}
+
+function loadImage(url: string): Promise<HTMLImageElement> {
+  return new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = rej; im.src = url; });
+}
+
 /**
  * The editable pixels of a texture. The first ask starts loading them and returns null; listeners hear when they're
  * ready. A texture changed from outside, by undo say, is loaded afresh.
@@ -70,47 +97,125 @@ export function texDoc(t: Texture): TexDoc | null {
   if (d) { docs.delete(t.id); liveTextures.delete(t.id); }
   if (loading.get(t.id) === t.url) return null;
   loading.set(t.id, t.url);
-  const im = new Image();
-  im.onload = () => {
+  const sources = t.layers?.length ? t.layers : [{ name: 'Base', url: t.url, opacity: 1, visible: true }];
+  Promise.all(sources.map((l) => loadImage(l.url))).then((ims) => {
     if (loading.get(t.id) !== t.url) return;
     loading.delete(t.id);
+    const w = ims[0].naturalWidth, h = ims[0].naturalHeight;
     const canvas = document.createElement('canvas');
-    canvas.width = im.naturalWidth; canvas.height = im.naturalHeight;
+    canvas.width = w; canvas.height = h;
     const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
-    ctx.drawImage(im, 0, 0);
-    docs.set(t.id, { texId: t.id, url: t.url, w: canvas.width, h: canvas.height, canvas, ctx, img: ctx.getImageData(0, 0, canvas.width, canvas.height) });
+    const layers = sources.map((l, i) => makeLayer(l.name, w, h, l.opacity, l.visible, ims[i]));
+    const doc: TexDoc = {
+      texId: t.id, url: t.url, w, h, canvas, ctx, layers, active: layers.length - 1,
+      get img() { return this.layers[this.active].img; },
+    };
+    composite(doc);
+    docs.set(t.id, doc);
     notify();
-  };
-  im.onerror = () => loading.delete(t.id);
-  im.src = t.url;
+  }).catch(() => loading.delete(t.id));
   return null;
 }
 
-/** Show the pixels' latest state on the canvas and in every view, without saving. */
+/** Combine the visible layers, bottom first, into the canvas views show. */
+function composite(d: TexDoc) {
+  d.ctx.clearRect(0, 0, d.w, d.h);
+  for (const l of d.layers) {
+    if (!l.visible || l.opacity <= 0) continue;
+    d.ctx.globalAlpha = l.opacity;
+    d.ctx.drawImage(l.canvas, 0, 0);
+  }
+  d.ctx.globalAlpha = 1;
+}
+
+/** The combined colour at a pixel, as the views show it: for picking colours. */
+export function compositeAt(d: TexDoc, x: number, y: number): [number, number, number, number] | null {
+  if (x < 0 || y < 0 || x >= d.w || y >= d.h) return null;
+  const p = d.ctx.getImageData(Math.floor(x), Math.floor(y), 1, 1).data;
+  return [p[0], p[1], p[2], p[3]];
+}
+
+/** Show the active layer's latest pixels in the combined canvas and every view, without saving. */
 export function pushLive(d: TexDoc) {
-  d.ctx.putImageData(d.img, 0, 0);
+  const l = d.layers[d.active];
+  l.ctx.putImageData(l.img, 0, 0);
+  composite(d);
   liveTextures.set(d.texId, d.canvas);
   app.vp?.sg.showLiveTexture(d.texId);
   notify();
 }
 
-/** Save the pixels into the texture as one undo step. */
-export function commitDoc(d: TexDoc, label: string) {
-  d.ctx.putImageData(d.img, 0, 0);
+/**
+ * Save the pixels into the texture as one undo step: the combined image, and the layers when there's more than one.
+ * `extra` makes other changes in the same step.
+ */
+export function commitDoc(d: TexDoc, label: string, extra?: (m: Model) => void) {
+  for (const l of d.layers) l.ctx.putImageData(l.img, 0, 0);
+  composite(d);
   const url = d.canvas.toDataURL('image/png');
+  const single = d.layers.length === 1 && d.layers[0].visible && d.layers[0].opacity === 1;
+  const layers: TexLayer[] | undefined = single ? undefined : d.layers.map((l) => ({ name: l.name, url: l.canvas.toDataURL('image/png'), opacity: l.opacity, visible: l.visible }));
   d.url = url;
   ed.transact(label, (m) => {
     const t = m.textures.find((x) => x.id === d.texId);
     if (!t) return;
     t.url = url;
     t.rev = (t.rev ?? 0) + 1;
+    if (layers) t.layers = layers; else delete t.layers;
+    extra?.(m);
   });
+  liveTextures.set(d.texId, d.canvas);
+  app.vp?.sg.showLiveTexture(d.texId);
   notify();
 }
 
+// ---------- layers ----------
+export function addLayer(d: TexDoc) {
+  const names = d.layers.map((l) => l.name);
+  let n = d.layers.length + 1;
+  while (names.includes(`Layer ${n}`)) n++;
+  d.layers.splice(d.active + 1, 0, makeLayer(`Layer ${n}`, d.w, d.h));
+  d.active++;
+  commitDoc(d, 'New layer');
+}
+
+export function deleteLayer(d: TexDoc) {
+  if (d.layers.length < 2) return;
+  d.layers.splice(d.active, 1);
+  d.active = Math.min(d.active, d.layers.length - 1);
+  commitDoc(d, 'Delete layer');
+}
+
+/** Move the active layer up (toward the top) or down. */
+export function moveLayer(d: TexDoc, by: 1 | -1) {
+  const to = d.active + by;
+  if (to < 0 || to >= d.layers.length) return;
+  [d.layers[d.active], d.layers[to]] = [d.layers[to], d.layers[d.active]];
+  d.active = to;
+  commitDoc(d, by > 0 ? 'Raise layer' : 'Lower layer');
+}
+
+/** Paint the active layer onto the one below it, at its opacity, and remove it. */
+export function mergeDown(d: TexDoc) {
+  if (d.active < 1) return;
+  const top = d.layers[d.active], below = d.layers[d.active - 1];
+  top.ctx.putImageData(top.img, 0, 0);
+  below.ctx.putImageData(below.img, 0, 0);
+  if (top.visible) { below.ctx.globalAlpha = top.opacity; below.ctx.drawImage(top.canvas, 0, 0); below.ctx.globalAlpha = 1; }
+  below.img = below.ctx.getImageData(0, 0, d.w, d.h);
+  d.layers.splice(d.active, 1);
+  d.active--;
+  commitDoc(d, 'Merge layer down');
+}
+
+export function setLayer(d: TexDoc, i: number, change: Partial<Pick<DocLayer, 'opacity' | 'visible' | 'name'>>) {
+  Object.assign(d.layers[i], change);
+  commitDoc(d, change.name !== undefined ? 'Rename layer' : change.visible !== undefined ? (change.visible ? 'Show layer' : 'Hide layer') : 'Layer opacity');
+}
+
 /**
- * Lay the faces out for painting as a view sees them, and carry their paint across so the model looks the same.
- * One undo step. Other faces on the same texture keep their pixels, unless the new layout lands on them.
+ * Lay the faces out for painting as a view sees them, and carry their paint across, on every layer, so the model
+ * looks the same. One undo step. Other faces on the same texture keep their pixels, unless the new layout lands on them.
  */
 export function layoutForPainting(d: TexDoc, faces: number[], right: V3, up: V3) {
   const before = cloneModel(ed.model);
@@ -124,18 +229,14 @@ export function layoutForPainting(d: TexDoc, faces: number[], right: V3, up: V3)
       tris.push({ from: c.map((k) => before.faces[fi].uv[k]) as [V2, V2, V2], to: c.map((k) => after.faces[fi].uv[k]) as [V2, V2, V2] });
     }
   }
-  const out = new ImageData(new Uint8ClampedArray(d.img.data), d.w, d.h);
-  remapPixels(d.img, out, tris);
-  d.img = out;
-  d.ctx.putImageData(out, 0, 0);
-  const url = d.canvas.toDataURL('image/png');
-  d.url = url;
-  ed.transact('Lay out for painting', (m) => {
+  for (const l of d.layers) {
+    const out = new ImageData(new Uint8ClampedArray(l.img.data), d.w, d.h);
+    remapPixels(l.img, out, tris);
+    l.img = out;
+  }
+  commitDoc(d, 'Lay out for painting', (m) => {
     for (const fi of faces) m.faces[fi].uv = after.faces[fi].uv.map((u) => [u[0], u[1]] as V2);
-    const t = m.textures.find((x) => x.id === d.texId);
-    if (t) { t.url = url; t.rev = (t.rev ?? 0) + 1; }
   });
-  pushLive(d);
 }
 
 /** Throw away unsaved pixel edits, going back to the saved image. */

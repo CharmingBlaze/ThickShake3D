@@ -4,12 +4,12 @@ import * as THREE from 'three';
 import { ed } from '../core/editor';
 import { faceNormal } from '../core/geom';
 import * as ops from '../core/ops';
-import { uvAtPoint, uvToPixel } from '../core/paint';
+import { seamTwins, uvAtPoint, uvToPixel, worldPerTexel } from '../core/paint';
 import { cellAt, cellCorners, faceCell, fitTileToFace, placeTileQuad, tileForCell, tileOfFace, tileUV, type TilePlane } from '../core/tiles';
 import { makeGroup, type Model, type V3 } from '../core/types';
 import { app } from '../ui/app';
 import { status, toast } from '../ui/feedback';
-import { paint, strokeBegin, strokeEnd, strokeMove } from '../ui/paintEditor';
+import { paint, strokeAlso, strokeBegin, strokeEnd, strokeFlush, strokeHasTip, strokeMove } from '../ui/paintEditor';
 import { texDoc, textureOfFace, type TexDoc } from '../ui/textureDoc';
 import { atlasGrid, atlasMaterial, atlasTexture, tiles, type TileMode } from '../ui/tileEditor';
 import type { Pane } from './pane';
@@ -31,7 +31,7 @@ export class TexPaintTool {
   get active() { return this.doc !== null; }
 
   /** The texture pixel under the mouse, and the texture it's on. */
-  private hitPixel(p: Pane, x: number, y: number): { doc: TexDoc; px: number; py: number } | null {
+  private hitPixel(p: Pane, x: number, y: number): { doc: TexDoc; px: number; py: number; face: number; point: V3 } | null {
     const hit = pick.pickFace(p, this.host.sg, x, y, false);
     if (!hit) return null;
     const t = textureOfFace(ed.model, hit.face);
@@ -41,7 +41,27 @@ export class TexPaintTool {
     const uv = uvAtPoint(ed.model, hit.face, v3(hit.point));
     if (!uv) return null;
     const [px, py] = uvToPixel(uv, d.w, d.h);
-    return { doc: d, px, py };
+    return { doc: d, px, py, face: hit.face, point: v3(hit.point) };
+  }
+
+  /** The faces showing the texture being painted, worked out when a stroke starts. */
+  private sameTexture: number[] = [];
+
+  /**
+   * Carry the brush across UV seams: paint it as a ball on the model, so faces beside this one whose part of the
+   * texture lies elsewhere get their share of the dab too.
+   */
+  private paintTwins(h: { doc: TexDoc; face: number; point: V3 }) {
+    if (!strokeHasTip()) return;
+    const m = ed.model;
+    const k = worldPerTexel(m, h.face, h.doc.w, h.doc.h);
+    if (!k) return;
+    const radius = (paint.size / 2 + 0.5) * k;
+    for (const t of seamTwins(m, h.face, h.point, radius, this.sameTexture)) {
+      const [px, py] = uvToPixel(t.uv, h.doc.w, h.doc.h);
+      const kt = worldPerTexel(m, t.face, h.doc.w, h.doc.h) || k;
+      strokeAlso(t.face, px, py, Math.max(0, (t.radius / kt) * 2 - 1));
+    }
   }
 
   /** How many screen pixels one texel covers at the mouse, measured by picking just beside it. */
@@ -55,7 +75,14 @@ export class TexPaintTool {
     // Lines and rectangles run straight in the texture, between where the drag starts and where it is now.
     const h = this.hitPixel(p, x, y);
     if (!h) { status('Loading the texture…'); return; }
-    if (strokeBegin(h.doc, h.px, h.py, e.shiftKey, e.altKey)) { this.doc = h.doc; this.last = [h.px, h.py]; }
+    if (strokeBegin(h.doc, h.px, h.py, e.shiftKey, e.altKey)) {
+      this.doc = h.doc; this.last = [h.px, h.py];
+      const m = ed.model;
+      this.sameTexture = [];
+      m.faces.forEach((_, fi) => { if (textureOfFace(m, fi)?.id === h.doc.texId) this.sameTexture.push(fi); });
+      this.paintTwins(h);
+      strokeFlush();
+    }
   }
 
   move(p: Pane, x: number, y: number) {
@@ -76,6 +103,7 @@ export class TexPaintTool {
     // Lines and rectangles always follow the mouse from where they started.
     const shape = paint.tool === 'line' || paint.tool === 'rect';
     const far = !shape && (!this.last || Math.hypot(h.px - this.last[0], h.py - this.last[1]) > Math.max(12, paint.size * 4));
+    if (!shape) this.paintTwins(h);
     strokeMove(h.px, h.py, far);
     this.last = [h.px, h.py];
   }

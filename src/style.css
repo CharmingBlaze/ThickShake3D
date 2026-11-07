@@ -347,7 +347,14 @@ body.dropping .dock .map-block { outline: 1px dashed var(--accent); outline-offs
 .paint-palette .field-select { max-width: 120px; }
 .paint-chips { display: flex; flex-wrap: wrap; gap: 2px; }
 .paint-chips.recent { padding-left: 6px; border-left: 1px solid var(--line-2); }
+.paint-chips.used { align-items: center; gap: 2px; padding-left: 6px; border-left: 1px solid var(--line-2); }
+.paint-chips.used .muted { margin-right: 4px; }
 .paint-chips .palette-chip { width: 16px; height: 16px; }
+.paint-layers { gap: 8px; }
+.paint-layer-list { display: flex; flex-wrap: wrap; gap: 2px; }
+.paint-layer { display: flex; align-items: center; gap: 4px; padding: 2px 6px; background: var(--bg-2); border: 1px solid var(--line-2); cursor: pointer; }
+.paint-layer.active { border-color: var(--accent); background: var(--bg-3); }
+.paint-layer-name { white-space: nowrap; }
 .paint-canvas { position: absolute; left: 0; top: 0; display: block; touch-action: none; cursor: crosshair; }
 
 /* Status */

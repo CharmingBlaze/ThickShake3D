@@ -12,7 +12,7 @@ import { applyEase, applyPose, bakeClip, capturePose, copyKeys, deleteKeys, EASE
 import { deformPoints, lathe, partPrim, PARTS, inflateParts, pathLength, PEN_SECTIONS, penFrame, profileAt, quadSilhouette, resamplePath, ROUND_PROFILE, silhouette, tube } from '../src/core/organic';
 import { bezierAt, insertAnchor, nearestOnOutline, sampleOutline, type PenAnchor } from '../src/core/pen';
 import { splitOutline } from '../src/core/limbs';
-import { blendPixel, brushFootprint, floodFill, getPixel, linePixels, rectPixels, remapPixels, strokeLine, uvAtPoint, type Brush, type Pixels, type RGBA } from '../src/core/paint';
+import { blendPixel, brushFootprint, clearRegion, clipRect, copyRegion, flipRegion, floodFill, getPixel, keepInside, linePixels, mapToPalette, pasteRegion, rectPixels, reducePalette, remapPixels, replaceColor, seamTwins, strokeLine, usedColors, uvAtPoint, worldPerTexel, type Brush, type Pixels, type RGBA } from '../src/core/paint';
 import { cellAt, cellCorners, fitTileToFace, placeTileQuad, tileAtPixel, tileCounts, tileForCell, tileOfFace, tilePixels, tileUV, type TileBlock, type TileGrid, type TilePlane } from '../src/core/tiles';
 import { addLimb, addStarter, deformPiece, fusePieces, limbFrame, radialPieces, reducePiece, twinOf, alignPieces, arrayPieces, colorsToMaterials, dropPieces, mirrorPiece, pieceBounds, scaleFigure, snapPieces } from '../src/core/blockout';
 import { bounds, dist } from '../src/core/geom';
@@ -776,6 +776,66 @@ describe('painting pixels', () => {
     expect(uv[0]).toBeCloseTo(avg[0], 6);
     expect(uv[1]).toBeCloseTo(avg[1], 6);
     expect(uvAtPoint(m, fi, [50, 0, 50])).toBeNull();
+  });
+
+  it('carries a dab across a UV seam to the faces the brush reaches', () => {
+    const m = modelOf(prims.box(2, 2, 2));
+    // The top face, and a point on it just inside its edge toward +X.
+    const top = m.faces.findIndex((f) => f.v.every((v) => m.verts[v].p[1] > 0.99));
+    const side = m.faces.findIndex((f) => f.v.every((v) => m.verts[v].p[0] > 0.99));
+    const p: V3 = [0.95, 1, 0];
+    const all = m.faces.map((_, i) => i);
+    const twins = seamTwins(m, top, p, 0.2, all);
+    // Only the +X side is within reach; the ball reaches 0.2 âˆ’ 0.05 past the edge down it, so its circle there is smaller.
+    expect(twins.map((t) => t.face)).toEqual([side]);
+    expect(twins[0].radius).toBeLessThan(0.2);
+    expect(twins[0].radius).toBeGreaterThan(0.1);
+    // The twin is near the side's own UV square: straight across from p, on the side's plane, is its top edge.
+    const onSide = uvAtPoint(m, side, [1, 0.999, 0])!;
+    expect(Math.hypot(twins[0].uv[0] - onSide[0], twins[0].uv[1] - onSide[1])).toBeLessThan(0.02);
+    // Far from any edge, nothing else is reached; and a texel's size comes from the face's size on the texture.
+    expect(seamTwins(m, top, [0, 1, 0], 0.2, all)).toEqual([]);
+    expect(worldPerTexel(m, top, 64, 64)).toBeGreaterThan(0);
+  });
+
+  it('copies, pastes and flips regions, and keeps painting inside a selection', () => {
+    const img = blank(4, 4);
+    blendPixel(img, 0, 0, red); blendPixel(img, 1, 0, [0, 0, 255, 255]);
+    const r = copyRegion(img, { x: 0, y: 0, w: 2, h: 1 });
+    const f = flipRegion(r, 'x');
+    expect(getPixel(f, 0, 0)).toEqual([0, 0, 255, 255]);
+    pasteRegion(img, f, 2, 3);
+    expect(getPixel(img, 2, 3)).toEqual([0, 0, 255, 255]);
+    expect(getPixel(img, 3, 3)).toEqual(red);
+    clearRegion(img, { x: 0, y: 0, w: 1, h: 1 });
+    expect(alphaAt(img, 0, 0)).toBe(0);
+    expect(clipRect(img, { x: -2, y: 3, w: 4, h: 4 })).toEqual({ x: 0, y: 3, w: 2, h: 1 });
+    // Paint everything, then keep only what landed in the selection.
+    const before = img.data.slice();
+    for (let y = 0; y < 4; y++) for (let x = 0; x < 4; x++) blendPixel(img, x, y, red);
+    keepInside(img, before, { x: 1, y: 1, w: 2, h: 2 }, { x: 0, y: 0, w: 4, h: 4 });
+    expect(getPixel(img, 1, 1)).toEqual(red);
+    expect(alphaAt(img, 0, 0)).toBe(0);
+    expect(getPixel(img, 2, 3)).toEqual([0, 0, 255, 255]);
+  });
+
+  it('lists, swaps and reduces the colours a texture uses', () => {
+    const img = blank(4, 1);
+    blendPixel(img, 0, 0, red); blendPixel(img, 1, 0, red); blendPixel(img, 2, 0, [250, 10, 0, 255]); blendPixel(img, 3, 0, [0, 0, 200, 128]);
+    const used = usedColors(img)!;
+    expect(used.length).toBe(3);
+    expect(used[0]).toEqual({ c: red, count: 2 });
+    expect(usedColors(img, 2)).toBeNull();
+    expect(replaceColor(img, [0, 0, 200, 255], [0, 255, 0, 255])).toBe(1);
+    // The swapped pixel keeps its own alpha.
+    expect(getPixel(img, 3, 0)).toEqual([0, 255, 0, 128]);
+    const pal = reducePalette(img, 2);
+    expect(pal.length).toBe(2);
+    mapToPalette(img, pal);
+    // The two near reds merge; green stays apart.
+    expect(getPixel(img, 0, 0)).toEqual(getPixel(img, 2, 0));
+    expect(getPixel(img, 3, 0)![1]).toBeGreaterThan(200);
+    expect(usedColors(img)!.length).toBe(2);
   });
 });
 
@@ -2232,8 +2292,20 @@ describe('official glTF validator', () => {
   });
 });
 
+describe('undo snapshots of textures', () => {
+  it('keep a texture as it was when its image is changed afterwards', () => {
+    const m = emptyModel();
+    m.textures.push({ id: 1, name: 't', url: 'data:old', width: 1, height: 1, layers: [{ name: 'Base', url: 'data:old', opacity: 1, visible: true }] });
+    const snap = cloneModel(m);
+    m.textures[0].url = 'data:new';
+    m.textures[0].layers![0].url = 'data:new';
+    expect(snap.textures[0].url).toBe('data:old');
+    expect(snap.textures[0].layers![0].url).toBe('data:old');
+  });
+});
+
 describe('undo snapshots', () => {
-  it('cloneModel is deep for geometry and shares texture records', () => {
+  it('cloneModel is deep for geometry and copies texture records, sharing their images', () => {
     const m = buildSample();
     m.textures.push({ id: 99, name: 't', url: 'data:x', width: 1, height: 1 });
     const c = cloneModel(m);
@@ -2244,6 +2316,10 @@ describe('undo snapshots', () => {
     expect(m.verts[0].p[0]).not.toBe(123);
     expect(m.faces[0].uv[0][0]).not.toBe(7);
     expect(m.bones[0].head[0]).not.toBe(9);
-    expect(c.textures[0]).toBe(m.textures[0]);
+    // A record of its own, so painting one doesn't change the other; the image string itself is shared.
+    expect(c.textures[0]).not.toBe(m.textures[0]);
+    expect(c.textures[0]).toEqual(m.textures[0]);
+    c.textures[0].url = 'data:y';
+    expect(m.textures[0].url).toBe('data:x');
   });
 });

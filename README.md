@@ -168,9 +168,12 @@ View > Export UV Layout saves the wireframe as a transparent PNG to paint over.
 Pick Paint from the workspace menu (Ctrl+6). The texture panel on the left shows the texture of the selection, or the active part, with the model's UV layout over it.
 
 - **No texture yet?** Choose a size and press New texture. It's filled with the part's colour, and textures of 256 or smaller start as pixel art.
-- **Tools:** Pencil (P) paints hard pixels, Brush (B) is soft with Opacity and Hardness, Eraser (E), Fill (G) with Tolerance and Every match, Line (L), Rectangle (U), and Pick colour (I). Alt picks a colour with any tool.
+- **Tools:** Pencil (P) paints hard pixels, Brush (B) is soft with Opacity and Hardness, Eraser (E), Fill (G) with Tolerance and Every match, Line (L), Rectangle (U), Pick colour (I) and Select (S). Alt picks a colour with any tool.
 - **Colours:** left click paints the main colour and right click the second; X swaps them. Click a swatch for the colour picker. The palette strip below has the built-in and your own palettes, plus recent colours.
-- **Paint on the model:** drag on it in the view with the same tools. Shift paints the second colour.
+- **Paint on the model:** drag on it in the view with the same tools. Shift paints the second colour. The brush paints as a ball on the surface, so a stroke carries on across UV seams onto the faces beside it, wherever their part of the texture is.
+- **Layers:** + adds a layer above the active one, − deletes it, ↑ and ↓ move it, and Merge paints it onto the one below. Click a layer to paint on it, untick it to hide it, double-click to rename it; each has its own opacity. Layers are saved with the project; exports get the combined image.
+- **Select (S):** drag a rectangle, then drag inside it to move what it holds. Painting and fills stay inside it. Delete clears it, Ctrl+C, Ctrl+X and Ctrl+V copy, cut and paste, H and V flip it, Ctrl+A selects everything, and Ctrl+D or Esc lets go.
+- **Indexed colours:** the In layer strip lists every colour the active layer uses, for pixel art. Click one to paint with it, or double-click to recolour every pixel of it at once. Reduce… cuts the layer down to a number of colours.
 - **More:** `[` and `]` change the size, M mirrors across the texture's centre, F fits the texture, and Space-drag or the middle button pans. The wheel zooms in whole steps, so pixels stay square, and a pixel grid shows when zoomed in.
 - **Pixel art** keeps a texture sharp in the view and exports it with nearest-neighbour sampling in glTF.
 

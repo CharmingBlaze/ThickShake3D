@@ -110,6 +110,19 @@ export interface Texture {
   pixelated?: boolean;
   /** Counts edits made by painting, so views know to reload the image. */
   rev?: number;
+  /**
+   * Paint layers, bottom first, when the texture has more than one. `url` above is always all of them combined,
+   * which is what views show and exports write.
+   */
+  layers?: TexLayer[];
+}
+
+export interface TexLayer {
+  name: string;
+  /** Data URL of this layer alone. */
+  url: string;
+  opacity: number;
+  visible: boolean;
 }
 
 export interface Bone {
@@ -202,7 +215,9 @@ export function cloneModel(m: Model): Model {
     }),
     groups: m.groups.map((g) => ({ ...g })),
     materials: m.materials.map((x) => ({ ...x, maps: { ...x.maps } })),
-    textures: m.textures.slice(),
+    // Each texture record is copied, so editing one (painting changes its image) leaves the undo snapshot alone.
+    // The image strings themselves are shared, not copied.
+    textures: m.textures.map((t) => ({ ...t, ...(t.layers ? { layers: t.layers.map((l) => ({ ...l })) } : {}) })),
     bones: m.bones.map((b) => ({ ...b, head: [...b.head] as V3 })),
     clips: structuredClone(m.clips),
     nextId: m.nextId,

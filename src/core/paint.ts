@@ -1,8 +1,8 @@
 // Painting on texture pixels: hard pixel brushes for pixel art, soft brushes, lines, rectangles, flood fill and
 // colour picking. Works on plain RGBA pixel buffers, so it runs anywhere and is easy to test; the editor copies
 // them to and from canvases.
-import { triangulateFace } from './geom';
-import type { Model, V2 } from './types';
+import { cross, dot, faceArea, faceNormal, norm, sub, triangulateFace } from './geom';
+import type { Model, V2, V3 } from './types';
 
 export interface Pixels { width: number; height: number; data: Uint8ClampedArray }
 export type RGBA = [number, number, number, number];
@@ -179,6 +179,70 @@ export function floodFill(img: Pixels, x: number, y: number, c: RGBA, tolerance 
   return count;
 }
 
+// ---------- regions ----------
+export interface Rect { x: number; y: number; w: number; h: number }
+
+/** The rectangle clipped to the image, or null if none of it is inside. */
+export function clipRect(img: { width: number; height: number }, r: Rect): Rect | null {
+  const x0 = Math.max(0, r.x), y0 = Math.max(0, r.y), x1 = Math.min(img.width, r.x + r.w), y1 = Math.min(img.height, r.y + r.h);
+  return x1 > x0 && y1 > y0 ? { x: x0, y: y0, w: x1 - x0, h: y1 - y0 } : null;
+}
+
+/** A copy of the pixels in a rectangle. */
+export function copyRegion(img: Pixels, r: Rect): Pixels {
+  const out: Pixels = { width: r.w, height: r.h, data: new Uint8ClampedArray(r.w * r.h * 4) };
+  for (let y = 0; y < r.h; y++) for (let x = 0; x < r.w; x++) {
+    const sx = r.x + x, sy = r.y + y;
+    if (sx < 0 || sy < 0 || sx >= img.width || sy >= img.height) continue;
+    const si = (sy * img.width + sx) * 4, di = (y * r.w + x) * 4;
+    for (let k = 0; k < 4; k++) out.data[di + k] = img.data[si + k];
+  }
+  return out;
+}
+
+/** Make a rectangle transparent. */
+export function clearRegion(img: Pixels, r: Rect) {
+  const c = clipRect(img, r);
+  if (!c) return;
+  for (let y = c.y; y < c.y + c.h; y++) img.data.fill(0, (y * img.width + c.x) * 4, (y * img.width + c.x + c.w) * 4);
+}
+
+/** Put pixels down at (x, y): over what's there, as paint would, or replacing it. */
+export function pasteRegion(img: Pixels, src: Pixels, x: number, y: number, replace = false) {
+  for (let sy = 0; sy < src.height; sy++) for (let sx = 0; sx < src.width; sx++) {
+    const dx = x + sx, dy = y + sy;
+    if (dx < 0 || dy < 0 || dx >= img.width || dy >= img.height) continue;
+    const si = (sy * src.width + sx) * 4;
+    if (replace) { const di = (dy * img.width + dx) * 4; for (let k = 0; k < 4; k++) img.data[di + k] = src.data[si + k]; }
+    else blendPixel(img, dx, dy, [src.data[si], src.data[si + 1], src.data[si + 2], src.data[si + 3]]);
+  }
+}
+
+/** Flip pixels left to right, or upside down. */
+export function flipRegion(src: Pixels, axis: 'x' | 'y'): Pixels {
+  const out: Pixels = { width: src.width, height: src.height, data: new Uint8ClampedArray(src.data.length) };
+  for (let y = 0; y < src.height; y++) for (let x = 0; x < src.width; x++) {
+    const fx = axis === 'x' ? src.width - 1 - x : x, fy = axis === 'y' ? src.height - 1 - y : y;
+    const si = (fy * src.width + fx) * 4, di = (y * src.width + x) * 4;
+    for (let k = 0; k < 4; k++) out.data[di + k] = src.data[si + k];
+  }
+  return out;
+}
+
+/**
+ * Put back every pixel outside `keep`, within `area`, from `before`: so painting stays inside a selection. Only
+ * `area` is checked, which keeps it quick on large textures.
+ */
+export function keepInside(img: Pixels, before: Uint8ClampedArray, keep: Rect, area: Rect) {
+  const a = clipRect(img, area);
+  if (!a) return;
+  for (let y = a.y; y < a.y + a.h; y++) for (let x = a.x; x < a.x + a.w; x++) {
+    if (x >= keep.x && x < keep.x + keep.w && y >= keep.y && y < keep.y + keep.h) continue;
+    const i = (y * img.width + x) * 4;
+    img.data[i] = before[i]; img.data[i + 1] = before[i + 1]; img.data[i + 2] = before[i + 2]; img.data[i + 3] = before[i + 3];
+  }
+}
+
 /** Mirror a pixel position across the image's vertical centre line, for symmetrical painting. */
 export const mirrorX = (img: Pixels, x: number) => img.width - x;
 
@@ -248,4 +312,178 @@ export function remapPixels(src: Pixels, dst: Pixels, tris: { from: [V2, V2, V2]
 export function uvToPixel(uv: V2, w: number, h: number): [number, number] {
   const u = uv[0] - Math.floor(uv[0]), v = uv[1] - Math.floor(uv[1]);
   return [u * w, v * h];
+}
+
+// ---------- indexed colours ----------
+/** One colour a texture uses, and how many visible pixels have it. */
+export interface UsedColor { c: RGBA; count: number }
+
+const key = (d: Uint8ClampedArray, i: number) => ((d[i] << 16) | (d[i + 1] << 8) | d[i + 2]) >>> 0;
+
+/**
+ * The colours an image uses, most common first, ignoring alpha and fully transparent pixels. Null when there are more
+ * than `max`, as in a painting rather than pixel art.
+ */
+export function usedColors(img: Pixels, max = 64): UsedColor[] | null {
+  const counts = new Map<number, number>();
+  const d = img.data;
+  for (let i = 0; i < d.length; i += 4) {
+    if (!d[i + 3]) continue;
+    const k = key(d, i);
+    counts.set(k, (counts.get(k) ?? 0) + 1);
+    if (counts.size > max) return null;
+  }
+  return [...counts].sort((a, b) => b[1] - a[1]).map(([k, count]) => ({ c: [(k >> 16) & 255, (k >> 8) & 255, k & 255, 255], count }));
+}
+
+/** Recolour every pixel of one colour, keeping each pixel's own alpha. Returns how many changed. */
+export function replaceColor(img: Pixels, from: RGBA, to: RGBA): number {
+  const d = img.data;
+  const want = ((from[0] << 16) | (from[1] << 8) | from[2]) >>> 0;
+  let n = 0;
+  for (let i = 0; i < d.length; i += 4) {
+    if (!d[i + 3] || key(d, i) !== want) continue;
+    d[i] = to[0]; d[i + 1] = to[1]; d[i + 2] = to[2];
+    n++;
+  }
+  return n;
+}
+
+/** Each visible pixel takes the nearest of the palette's colours, keeping its alpha. */
+export function mapToPalette(img: Pixels, palette: RGBA[]) {
+  if (!palette.length) return;
+  const d = img.data;
+  const memo = new Map<number, RGBA>();
+  for (let i = 0; i < d.length; i += 4) {
+    if (!d[i + 3]) continue;
+    const k = key(d, i);
+    let c = memo.get(k);
+    if (!c) {
+      let best = Infinity;
+      for (const p of palette) {
+        // Weighted for how the eye sees: green counts most, blue least.
+        const e = 2 * (p[0] - d[i]) ** 2 + 4 * (p[1] - d[i + 1]) ** 2 + 3 * (p[2] - d[i + 2]) ** 2;
+        if (e < best) { best = e; c = p; }
+      }
+      memo.set(k, c!);
+    }
+    d[i] = c![0]; d[i + 1] = c![1]; d[i + 2] = c![2];
+  }
+}
+
+/**
+ * Pick `n` colours that represent an image well: split the colours along their widest channel, at the biggest gap,
+ * until there are `n` groups, then average each group, weighted by how many pixels use each colour.
+ */
+export function reducePalette(img: Pixels, n: number): RGBA[] {
+  const counts = new Map<number, number>();
+  const d = img.data;
+  for (let i = 0; i < d.length; i += 4) if (d[i + 3]) { const k = key(d, i); counts.set(k, (counts.get(k) ?? 0) + 1); }
+  type Entry = { c: [number, number, number]; w: number };
+  const all: Entry[] = [...counts].map(([k, w]) => ({ c: [(k >> 16) & 255, (k >> 8) & 255, k & 255], w }));
+  if (!all.length) return [];
+  const boxes: Entry[][] = [all];
+  const spread = (b: Entry[]) => {
+    let best = -1, ch = 0;
+    for (let k = 0; k < 3; k++) {
+      let lo = 255, hi = 0;
+      for (const e of b) { lo = Math.min(lo, e.c[k]); hi = Math.max(hi, e.c[k]); }
+      if (hi - lo > best) { best = hi - lo; ch = k; }
+    }
+    return { range: best, ch };
+  };
+  while (boxes.length < n) {
+    // Split the box with the widest range of colour, if any still has more than one.
+    let pick = -1, widest = 0;
+    boxes.forEach((b, i) => { if (b.length > 1) { const s = spread(b).range; if (s > widest) { widest = s; pick = i; } } });
+    if (pick < 0) break;
+    const b = boxes[pick];
+    const { ch } = spread(b);
+    b.sort((x, y) => x.c[ch] - y.c[ch]);
+    // Cut at the widest gap between neighbouring colours, so distinct groups of colours stay apart.
+    let cut = 1, gap = -1;
+    for (let i = 0; i < b.length - 1; i++) { const g = b[i + 1].c[ch] - b[i].c[ch]; if (g > gap) { gap = g; cut = i + 1; } }
+    boxes.splice(pick, 1, b.slice(0, cut), b.slice(cut));
+  }
+  return boxes.map((b) => {
+    const w = b.reduce((s, e) => s + e.w, 0);
+    const avg = [0, 1, 2].map((k) => Math.round(b.reduce((s, e) => s + e.c[k] * e.w, 0) / w));
+    return [avg[0], avg[1], avg[2], 255] as RGBA;
+  });
+}
+
+// ---------- painting across UV seams ----------
+/** How far one texel reaches across a face on the model, in world units, from its size in 3D and on the texture. */
+export function worldPerTexel(m: Model, fi: number, w: number, h: number): number {
+  const f = m.faces[fi];
+  const world = faceArea(m, f);
+  let uv = 0;
+  const n = f.uv.length;
+  for (let i = 0; i < n; i++) { const a = f.uv[i], b = f.uv[(i + 1) % n]; uv += a[0] * b[1] - b[0] * a[1]; }
+  const px = Math.abs(uv / 2) * w * h;
+  return px > 1e-12 ? Math.sqrt(world / px) : 0;
+}
+
+/** One spot a brush ball reaches on another face: where on that face's texture, and how wide, in world units. */
+export interface SeamTwin { face: number; uv: V2; radius: number }
+
+/**
+ * Where a ball of paint at `p`, on face `fi`, also lands on the other `faces`: so a dab near a UV seam paints both
+ * sides of it. Each face the ball reaches gets the point straight across on its plane, and the radius of the circle the
+ * ball makes there. Faces turned away (the far side of a thin wall) are left alone.
+ */
+export function seamTwins(m: Model, fi: number, p: V3, radius: number, faces: Iterable<number>): SeamTwin[] {
+  const out: SeamTwin[] = [];
+  const n0 = faceNormal(m, m.faces[fi]);
+  for (const g of faces) {
+    if (g === fi) continue;
+    const f = m.faces[g];
+    if (!f) continue;
+    // Quick reject: the ball misses the face's bounds.
+    let miss = false;
+    for (let k = 0; k < 3 && !miss; k++) {
+      let lo = Infinity, hi = -Infinity;
+      for (const v of f.v) { const c = m.verts[v].p[k]; lo = Math.min(lo, c); hi = Math.max(hi, c); }
+      miss = p[k] < lo - radius || p[k] > hi + radius;
+    }
+    if (miss) continue;
+    const ng = faceNormal(m, f);
+    if (ng[0] * n0[0] + ng[1] * n0[1] + ng[2] * n0[2] < -0.3) continue;
+    const tris = triangulateFace(m, f);
+    let best: { d: number; plane: number; uv: V2 } | null = null;
+    for (let t = 0; t < tris.length; t += 3) {
+      const ia = tris[t], ib = tris[t + 1], ic = tris[t + 2];
+      const a = m.verts[f.v[ia]].p, b = m.verts[f.v[ib]].p, c = m.verts[f.v[ic]].p;
+      const e0 = sub(b, a), e1 = sub(c, a);
+      const nt = norm(cross(e0, e1));
+      if (!nt[0] && !nt[1] && !nt[2]) continue;
+      const plane = dot(sub(p, a), nt);
+      const q: V3 = [p[0] - plane * nt[0], p[1] - plane * nt[1], p[2] - plane * nt[2]];
+      // Where q sits in the triangle, unclamped, so a point just past an edge still maps just past it on the texture.
+      const v2 = sub(q, a);
+      const d00 = dot(e0, e0), d01 = dot(e0, e1), d11 = dot(e1, e1), d20 = dot(v2, e0), d21 = dot(v2, e1);
+      const den = d00 * d11 - d01 * d01;
+      if (Math.abs(den) < 1e-14) continue;
+      const v = (d11 * d20 - d01 * d21) / den, w = (d00 * d21 - d01 * d20) / den, u = 1 - v - w;
+      // How far q is outside the triangle, along its edges.
+      let edge = 0;
+      if (u < 0 || v < 0 || w < 0) {
+        edge = Math.min(segDist(q, a, b), segDist(q, b, c), segDist(q, c, a));
+      }
+      const d = Math.hypot(plane, edge);
+      if (best && d >= best.d) continue;
+      const A = f.uv[ia], B = f.uv[ib], C = f.uv[ic];
+      best = { d, plane: Math.abs(plane), uv: [u * A[0] + v * B[0] + w * C[0], u * A[1] + v * B[1] + w * C[1]] };
+    }
+    if (!best || best.d >= radius) continue;
+    out.push({ face: g, uv: best.uv, radius: Math.sqrt(radius * radius - best.plane * best.plane) });
+  }
+  return out;
+}
+
+function segDist(p: V3, a: V3, b: V3): number {
+  const ab = sub(b, a);
+  const l = dot(ab, ab);
+  const t = l > 1e-18 ? Math.max(0, Math.min(1, dot(sub(p, a), ab) / l)) : 0;
+  return Math.hypot(p[0] - a[0] - ab[0] * t, p[1] - a[1] - ab[1] * t, p[2] - a[2] - ab[2] * t);
 }
