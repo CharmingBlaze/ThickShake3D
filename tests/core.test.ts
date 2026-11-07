@@ -21,7 +21,9 @@ import { sampleTrack } from '../src/core/skeleton';
 import { addHumanoid, autoWeights, evalPose, heatWeights, mirrorJoints, mirrorName, mirrorWeights, paintWeight, pruneWeights, qAxisAngle, qFromEuler, qRotate, qToEuler, removeJoints, skinInto, smoothWeights, splitJoint, weightIssues } from '../src/core/skeleton';
 import { cloneModel, emptyModel, makeGroup, makeMaterial, type Gradient, type Clip, type Model, type Q, type V2, type V3 } from '../src/core/types';
 import { alignIslands, averageIslandScale, projectScreen, liveUnwrap, minimizeStretch, setPins, clearSeams, fitUV, packIslands, projectBox, relaxUV, seamEdges, seamsFromIslands, setSeams, setTexelDensity, smartUnwrap, stitchIslands, texelDensity, unwrap, uvIslands, uvOverlaps, uvStretch } from '../src/core/uv';
-import { exportGLB } from '../src/io/gltf';
+import { buildExportMesh, computeTangents, exportGLB } from '../src/io/gltf';
+import { bakeAO, bakeNormals, buildBvh, dilate, raycast, runToEnd, sampleSurface, type BakeMesh } from '../src/core/bake';
+import { packRects, remapIntoAtlas, type PackedRect } from '../src/core/atlas';
 import { exportMS3D, importMS3D } from '../src/io/ms3d';
 import { parseProject, serializeProject } from '../src/io/project';
 
@@ -2376,5 +2378,98 @@ describe('undo snapshots', () => {
     expect(c.textures[0]).toEqual(m.textures[0]);
     c.textures[0].url = 'data:y';
     expect(m.textures[0].url).toBe('data:x');
+  });
+});
+
+describe('baking and atlases', () => {
+  // A 2×2 floor at y = 0 facing up, laid out over the whole texture: U along +X, V along +Z.
+  const floor = (): BakeMesh => ({
+    positions: [-1, 0, -1, 1, 0, -1, 1, 0, 1, -1, 0, 1],
+    normals: [0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0],
+    uvs: [0, 0, 1, 0, 1, 1, 0, 1],
+    indices: [0, 2, 1, 0, 3, 2],
+  });
+
+  it('casts rays through a bounding volume tree', () => {
+    const m = modelOf(prims.box(2, 2, 2));
+    const em = buildExportMesh(m, m.groups[0], 1, null)!;
+    const bvh = buildBvh(em);
+    // From outside, straight at the box: it's met one unit in front of its centre.
+    const hit = raycast(bvh, 0, 0, 5, 0, 0, -1, 0, 100);
+    expect(hit?.t).toBeCloseTo(4, 6);
+    expect(raycast(bvh, 0, 5, 5, 0, 0, -1, 0, 100)).toBeNull();
+    // Too short a ray stops before it.
+    expect(raycast(bvh, 0, 0, 5, 0, 0, -1, 0, 3)).toBeNull();
+  });
+
+  it('finds the surface under each texel, and spreads edges outward', () => {
+    const s = sampleSurface(floor(), 8, 8);
+    expect([...s.mask].every((x) => x === 1)).toBe(true);
+    // Texel (0, 0) shows the corner near -X, -Z.
+    expect(s.pos[0]).toBeCloseTo(-0.875, 5);
+    expect(s.pos[2]).toBeCloseTo(-0.875, 5);
+    expect(s.nrm[1]).toBeCloseTo(1, 6);
+    const rgba = new Uint8ClampedArray(4 * 4 * 4);
+    const mask = new Uint8Array(16); mask[5] = 1; rgba.set([200, 100, 50, 255], 20);
+    dilate(rgba, mask, 4, 4, 1);
+    expect(Array.from(rgba.slice(0, 4))).toEqual([200, 100, 50, 255]);
+    expect(rgba[15 * 4 + 3]).toBe(0);
+  });
+
+  it('bakes ambient occlusion darker under a roof than in the open', () => {
+    const f = floor();
+    // A roof 0.2 above the half of the floor at -X, facing down.
+    const scene = buildBvh({
+      positions: [...Array.from(f.positions), -1, 0.2, -1, 0, 0.2, -1, 0, 0.2, 1, -1, 0.2, 1],
+      indices: [...Array.from(f.indices), 4, 5, 6, 4, 6, 7],
+    });
+    const s = sampleSurface(f, 16, 16);
+    const ao = runToEnd(bakeAO(s, scene, { samples: 32, distance: 2 }));
+    const at = (x: number, y: number) => ao[y * 16 + x];
+    expect(at(2, 8)).toBeLessThan(0.4);
+    expect(at(14, 8)).toBeGreaterThan(0.8);
+  });
+
+  it('bakes normals from a detailed surface in the low surface\'s tangent frame', () => {
+    const low = floor();
+    const a = 0.5;
+    // The detailed surface sits a little above, its normals all leaning toward +X.
+    const n = [Math.sin(a), Math.cos(a), 0];
+    const high = { positions: Array.from(low.positions).map((v, i) => (i % 3 === 1 ? 0.05 : v)), indices: low.indices };
+    const tangents = computeTangents({ ...low, joints: [], weights: [], group: null } as never);
+    const s = sampleSurface(low, 8, 8);
+    const { rgba, found } = runToEnd(bakeNormals(low, s, tangents, buildBvh(high), [...n, ...n, ...n, ...n], { distance: 0.2 }));
+    expect(found).toBe(64);
+    // +X is along U, so the lean shows in red; the surface still faces out, so blue stays high.
+    expect(rgba[0] / 255 * 2 - 1).toBeCloseTo(Math.sin(a), 1);
+    expect(rgba[1] / 255 * 2 - 1).toBeCloseTo(0, 1);
+    expect(rgba[2] / 255 * 2 - 1).toBeCloseTo(Math.cos(a), 1);
+  });
+
+  it('writes tangents the glTF way, with green pointing up the image', () => {
+    // A square facing +Z, the texture upright on it: U right along +X, V down the image along -Y.
+    const quad = { positions: [0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0], normals: [0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1], uvs: [0, 1, 1, 1, 1, 0, 0, 0], indices: [0, 1, 2, 0, 2, 3] };
+    const t = computeTangents({ ...quad, joints: [], weights: [], group: null } as never);
+    expect(Array.from(t.slice(0, 4))).toEqual([1, 0, 0, 1]);
+    // So a detailed surface leaning toward the top of the image bakes with green above neutral.
+    const lean = [0, Math.sin(0.5), Math.cos(0.5)];
+    const s = sampleSurface(quad, 4, 4);
+    const high = { positions: quad.positions.map((v, i) => (i % 3 === 2 ? 0.05 : v)), indices: quad.indices };
+    const { rgba } = runToEnd(bakeNormals(quad, s, t, buildBvh(high), [...lean, ...lean, ...lean, ...lean], { distance: 0.2 }));
+    expect(rgba[1]).toBeGreaterThan(180);
+  });
+
+  it('packs images into an atlas and moves UVs into them', () => {
+    const p = packRects([{ w: 64, h: 64 }, { w: 32, h: 32 }, { w: 64, h: 64 }], 2)!;
+    expect(p.width).toBeGreaterThanOrEqual(128);
+    const r = p.rects;
+    const overlap = (a: PackedRect, b: PackedRect) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+    expect(overlap(r[0], r[1]) || overlap(r[0], r[2]) || overlap(r[1], r[2])).toBe(false);
+    for (const q of r) { expect(q.x + q.w).toBeLessThanOrEqual(p.width); expect(q.y + q.h).toBeLessThanOrEqual(p.height); }
+    // A face tiled one repeat over still fits once shifted back.
+    const { uv, clamped } = remapIntoAtlas([[1, 1], [2, 1], [2, 2]], { x: 0, y: 0, w: 64, h: 64 }, 128, 128);
+    expect(clamped).toBe(false);
+    expect(uv[2]).toEqual([0.5, 0.5]);
+    expect(remapIntoAtlas([[0, 0], [3, 0], [3, 1]], { x: 0, y: 0, w: 64, h: 64 }, 128, 128).clamped).toBe(true);
   });
 });

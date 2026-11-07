@@ -11,9 +11,11 @@ export interface ExportOptions {
   includeLods: boolean;
   includeCollision: boolean;
   onlyVisible: boolean;
+  /** Shrink textures bigger than this many pixels across as they're written; 0 keeps them as they are. */
+  maxTexture?: number;
 }
 
-export const defaultExport: ExportOptions = { scale: 1, animations: true, skeleton: true, includeLods: true, includeCollision: true, onlyVisible: false };
+export const defaultExport: ExportOptions = { scale: 1, animations: true, skeleton: true, includeLods: true, includeCollision: true, onlyVisible: false, maxTexture: 0 };
 
 export interface ExportMesh {
   group: Group;
@@ -116,7 +118,9 @@ export function computeTangents(em: ExportMesh): Float32Array {
     }
     tx /= l; ty /= l; tz /= l;
     const cx = ny * tz - nz * ty, cy = nz * tx - nx * tz, cz = nx * ty - ny * tx;
-    const w = cx * bit[i * 3] + cy * bit[i * 3 + 1] + cz * bit[i * 3 + 2] < 0 ? -1 : 1;
+    // glTF's bitangent, cross(normal, tangent) × w, points up the image, where a normal map's green points; V runs
+    // down the image, so that's against the direction V grows in.
+    const w = cx * bit[i * 3] + cy * bit[i * 3 + 1] + cz * bit[i * 3 + 2] < 0 ? 1 : -1;
     out.set([tx, ty, tz, w], i * 4);
   }
   return out;

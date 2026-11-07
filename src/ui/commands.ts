@@ -23,6 +23,7 @@ import { modal, reportError, status, toast } from './feedback';
 import { h } from './dom';
 import { openAbout, openExportDialog, openShortcuts } from './dialogs';
 import { openPalette } from './palette';
+import { makeAtlas, openBakeDialog } from './gameTools';
 
 export interface Command {
   id: string;
@@ -591,6 +592,9 @@ def('mesh.collisionHull', 'Generate Convex Hull Collider', () => {
     toast(`Convex hull: ${tris.length} triangles (hidden). Exports with a UCX_ prefix.`, 'ok');
   });
 }, { enabled: hasAnyMesh });
+def('game.bake', 'Bake…', () => openBakeDialog());
+def('game.atlas', 'Make Texture Atlas', () => { void makeAtlas(); });
+
 def('mesh.collisionBox', 'Generate Box Collider', () => {
   ed.transact('Box collider', (m) => {
     const b = bounds(m.verts.map((v) => v.p));

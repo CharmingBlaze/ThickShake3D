@@ -39,7 +39,9 @@ export function fillLit(mat: THREE.MeshPhysicalMaterial, d: Material, texOf: Tex
   mat.map = texOf('base', true);
   mat.normalMap = texOf('normal', false);
   const ns = d.normalScale ?? MATERIAL_DEFAULTS.normalScale;
-  mat.normalScale.set(ns, ns);
+  // The view works its tangent frame out from UVs, with V running down the image, while a glTF normal map's green
+  // points up it: turn green round, as three.js's own glTF loader does without tangents.
+  mat.normalScale.set(ns, -ns);
   const orm = texOf('orm', false);
   mat.roughnessMap = orm; mat.metalnessMap = orm; mat.aoMap = orm;
   mat.aoMapIntensity = d.occlusionStrength ?? MATERIAL_DEFAULTS.occlusionStrength;

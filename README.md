@@ -231,6 +231,14 @@ Open the Animation workspace (Ctrl+4) and press Clip > New Clip. Rotate or move 
 
 GLB and MS3D store linear keys here, so curves export as the motion they produce: eased stretches gain a key per frame.
 
+## Getting it into a game
+
+- **Export presets:** File > Export has presets for Godot 4, Unity (glTFast), Unreal Engine 5, Roblox, the web, Sketchfab, mobile, 3D printing and older engines. Each sets the format and options for that target; change anything and Save… keeps it as a preset of your own. Largest texture shrinks bigger textures as they're written, leaving the project's own as they are.
+- **Bake (Game > Bake…):** bakes into the chosen part's material through its UV layout, which shouldn't overlap.
+  - *Ambient occlusion* shades creases and corners where light reaches less. Rays per texel trades smoothness for speed, Reach is how far away something can be and still shade, and it goes into the occlusion map or straight into the colour, for unlit looks.
+  - *Normals from a detailed part* give a simple part the look of a detailed one lined up with it, such as a sculpted or subdivided copy. Search distance should be a little more than the biggest gap between the two. Hide the detailed part afterwards, or delete it.
+- **Make Texture Atlas (Game menu):** packs every visible part's colour textures into one, with plain-coloured materials as small swatches, and draws everything with one new material, for fewer draw calls. Faces that repeat a texture are squeezed into one copy; normal, ORM and glow maps aren't carried over.
+
 ## Resizing
 
 Drag the dividers between the four viewports, the UV editor, the 3D view, the side panel and the timeline. Dragging from where the viewport dividers cross moves both at once. Double-click a divider to reset it. Sizes are remembered between runs.
@@ -239,6 +247,7 @@ Drag the dividers between the four viewports, the UV editor, the 3D view, the si
 
 - +Y is up, the space is right-handed, and 1 unit = 1 metre.
 - Texture V runs down from the top of the image, matching glTF.
+- Normal maps are the OpenGL kind glTF uses: green points up the image. Flip a DirectX map's green in the Material panel.
 - Joints rest with identity rotation. Imported rigs are converted to this on load, and their animation is baked per frame or per key.
 
 ## File formats
