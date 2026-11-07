@@ -150,6 +150,8 @@ export class Editor {
     if (this.pending) this.commit();
     this.pending = { label, model: cloneModel(this.model), sel: this.snapSel() };
   }
+  /** Rename the edit in progress, when it turns into something else partway (a move that ends in a weld). */
+  relabel(label: string) { if (this.pending) this.pending.label = label; }
   commit() {
     if (!this.pending) return;
     this.undoStack.push(this.pending);

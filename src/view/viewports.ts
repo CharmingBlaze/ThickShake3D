@@ -424,6 +424,113 @@ export class Viewports {
     this.invalidate();
   }
 
+  /** While moving vertices, the closest pair a right click would weld: a moving vertex and the one it's over. */
+  private weldTarget: { target: number; source: number } | null = null;
+  /** The still vertices on screen, in cells, for the drag in progress: they don't move while it lasts. */
+  private weldGrid: { drag: object; cells: Map<string, { v: number; x: number; y: number; z: number }[]> } | null = null;
+
+  /** How close on screen, in pixels, a moving vertex must come to another to weld onto it. */
+  private static readonly WELD_PX = 14;
+
+  /** Of all the moving vertices, the one nearest to any still vertex, and that vertex: they find each other. */
+  private findWeldTarget(d: Extract<Drag, { kind: 'transform' }>): { target: number; source: number } | null {
+    if (d.mode !== 'move' || ed.mode === 'bone' || !d.orig.size) return null;
+    const p = d.pane;
+    const P = ed.model.verts;
+    const R = Viewports.WELD_PX;
+    const key = (x: number, y: number) => `${Math.floor(x / R)},${Math.floor(y / R)}`;
+    if (this.weldGrid?.drag !== d) {
+      const moving = new Set<number>([...d.orig.keys(), ...d.mirror.values()]);
+      const cells = new Map<string, { v: number; x: number; y: number; z: number }[]>();
+      for (const v of this.sg.visibleVerts) {
+        if (moving.has(v) || !P[v]) continue;
+        const s = p.project(P[v].p[0], P[v].p[1], P[v].p[2]);
+        if (s.z < -1 || s.z > 1) continue;
+        const k = key(s.x, s.y);
+        const c = cells.get(k);
+        if (c) c.push({ v, x: s.x, y: s.y, z: s.z }); else cells.set(k, [{ v, x: s.x, y: s.y, z: s.z }]);
+      }
+      this.weldGrid = { drag: d, cells };
+    }
+    const cells = this.weldGrid.cells;
+    let best: { target: number; source: number } | null = null, bd = R, bz = Infinity;
+    for (const v of d.orig.keys()) {
+      const s = p.project(P[v].p[0], P[v].p[1], P[v].p[2]);
+      const cx = Math.floor(s.x / R), cy = Math.floor(s.y / R);
+      for (let ix = -1; ix <= 1; ix++) for (let iy = -1; iy <= 1; iy++) {
+        for (const c of cells.get(`${cx + ix},${cy + iy}`) ?? []) {
+          const dd = Math.hypot(c.x - s.x, c.y - s.y);
+          // Nearest wins; at the same distance, the one in front.
+          if (dd < bd - 0.25 || (Math.abs(dd - bd) <= 0.25 && c.z < bz)) { best = { target: c.v, source: v }; bd = dd; bz = c.z; }
+        }
+      }
+    }
+    return best;
+  }
+
+  /** A right click while moving, with a moving vertex over another: snap it on and weld the two. False if there's none. */
+  private weldOnto(): boolean {
+    const d = this.drag;
+    if (d?.kind !== 'transform') return false;
+    const w = this.findWeldTarget(d);
+    this.weldTarget = null;
+    if (!w) return false;
+    const m = ed.model;
+    const tp = m.verts[w.target].p, sp = m.verts[w.source].p;
+    const delta: V3 = [tp[0] - sp[0], tp[1] - sp[1], tp[2] - sp[2]];
+    // The whole selection shifts so the carried vertex sits exactly on the target, mirrored side included.
+    for (const v of d.orig.keys()) { const q = m.verts[v].p; m.verts[v].p = [q[0] + delta[0], q[1] + delta[1], q[2] + delta[2]]; }
+    d.mirror.forEach((j, i) => { const q = m.verts[i].p; m.verts[j].p = [-q[0], q[1], q[2]]; });
+    const at: V3 = [...tp] as V3;
+    // With symmetry on, the other side's pair welds too.
+    const pairs: [number, number][] = [[w.target, w.source]];
+    const mj = d.mirror.get(w.source);
+    if (mj !== undefined) {
+      const mt = m.verts.findIndex((v, i) => i !== w.target && i !== mj && !d.orig.has(i) && Math.abs(v.p[0] + at[0]) < 1e-5 && Math.abs(v.p[1] - at[1]) < 1e-5 && Math.abs(v.p[2] - at[2]) < 1e-5);
+      if (mt >= 0 && mt !== w.target) pairs.push([mt, mj]);
+    }
+    // Weld one pair at a time, finding each by position, since welding renumbers what's after it.
+    const near = (p: V3) => m.verts.findIndex((v) => Math.abs(v.p[0] - p[0]) < 1e-6 && Math.abs(v.p[1] - p[1]) < 1e-6 && Math.abs(v.p[2] - p[2]) < 1e-6);
+    const spots = pairs.map(([t]) => [...m.verts[t].p] as V3);
+    for (const spot of spots) {
+      const both = m.verts.map((v, i) => i).filter((i) => Math.abs(m.verts[i].p[0] - spot[0]) < 1e-6 && Math.abs(m.verts[i].p[1] - spot[1]) < 1e-6 && Math.abs(m.verts[i].p[2] - spot[2]) < 1e-6);
+      if (both.length > 1) ops.collapse(m, new Set(both));
+    }
+    this.modal = null;
+    this.drag = null;
+    ed.relabel('Move and weld');
+    ed.commit();
+    // The welded vertex stays selected, in Vertex mode, ready to carry on.
+    const kept = near(at);
+    ed.setMode('vertex');
+    ed.clearSelection();
+    if (kept >= 0) ed.selVerts.add(kept);
+    ed.emitAll();
+    status('Welded onto the vertex under the mouse.');
+    this.invalidate();
+    return true;
+  }
+
+  /** A ring round the vertex a right click would weld onto, with a reminder. */
+  private drawWeldTarget(g: CanvasRenderingContext2D, p: Pane) {
+    const w = this.weldTarget;
+    const d = this.drag;
+    if (!w || d?.kind !== 'transform' || d.pane !== p) return;
+    const v = ed.model.verts[w.target];
+    if (!v) return;
+    const s = p.project(v.p[0], v.p[1], v.p[2]);
+    // The hovered vertex lights up: a filled dot inside a ring.
+    g.fillStyle = '#4cf28a';
+    g.beginPath(); g.arc(s.x, s.y, 4.5, 0, Math.PI * 2); g.fill();
+    g.strokeStyle = '#4cf28a'; g.lineWidth = 2;
+    g.beginPath(); g.arc(s.x, s.y, 9, 0, Math.PI * 2); g.stroke();
+    g.font = '11px system-ui, sans-serif';
+    const label = 'Right click: weld';
+    const tw = g.measureText(label).width;
+    g.fillStyle = 'rgba(12,16,20,.85)'; g.fillRect(s.x + 12, s.y - 22, tw + 10, 17);
+    g.fillStyle = '#4cf28a'; g.fillText(label, s.x + 17, s.y - 9);
+  }
+
   private confirmModal() {
     if (!this.modal) return;
     this.modal = null;
@@ -779,6 +886,7 @@ export class Viewports {
       if (ed.tool === 'tile') this.tileTool.draw(g, p);
       if (ed.tool === 'bend') this.bendTool.draw(g, p);
       this.drawModal(g, p);
+      this.drawWeldTarget(g, p);
       if (p === this.active && this.layout === 'quad') {
         g.strokeStyle = 'rgba(242,178,76,.55)'; g.lineWidth = 1;
         g.strokeRect(p.x + 0.5, p.y + 0.5, p.w - 1, p.h - 1);
@@ -1444,7 +1552,7 @@ export class Viewports {
       // While moving, rotating or scaling with G, R or S, a click keeps it and a right click puts it back.
       if (this.modal) {
         if (e.button === 0) this.confirmModal();
-        else if (e.button === 2) this.cancelModal();
+        else if (e.button === 2 && !this.weldOnto()) this.cancelModal();
         return;
       }
       const { x, y } = this.local(e);
@@ -1462,6 +1570,7 @@ export class Viewports {
       if (e.button === 2 && this.insetModal.active) { this.insetModal.cancel(); return; }
       if (e.button === 2 && this.bendTool.dragging) { this.bendTool.cancel(); return; }
       if (e.button === 1) { this.drag = { kind: 'pan', pane: p, x, y }; return; }
+      if (e.button === 2 && this.drag?.kind === 'transform' && this.weldOnto()) return;
       if (e.button === 2 && (this.drag?.kind === 'transform' || this.drag?.kind === 'ik' || this.drag?.kind === 'sculpt')) { this.cancelDrag(); return; }
       if (e.altKey && (e.button === 0 || e.button === 2)) {
         const kind = altDragKind(p, e);
@@ -1479,6 +1588,13 @@ export class Viewports {
       if (!this.drag && !this.loopTool.sliding && !this.bendTool.dragging && e.target !== ov) return;
       const { x, y } = this.local(e);
       this.mouse = { x, y, inside: e.target === ov };
+      // The right button pressed while the left is held down comes as a move, not a press: while moving vertices,
+      // it welds the closest pair, or else puts the move back, just as a right click on its own does.
+      if (e.button === 2 && (e.buttons & 2) && this.drag?.kind === 'transform') {
+        if (!this.weldOnto()) { if (this.modal) this.cancelModal(); else this.cancelDrag(); }
+        this.rightPress = null;
+        return;
+      }
       const d = this.drag;
       if (!d) {
         const p = this.paneAt(x, y);
@@ -1513,6 +1629,7 @@ export class Viewports {
         case 'transform':
           if (this.modal?.d === d) this.updateModal({ x, y, shift: e.shiftKey, ctrl: e.ctrlKey });
           else this.applyTransform(d, x, y, e.ctrlKey !== ed.snap);
+          this.weldTarget = this.findWeldTarget(d);
           break;
         case 'prim': this.dragPrim(d, x, y, e); break;
         case 'primResize': this.dragPrimResize(d, x, y, e); break;
