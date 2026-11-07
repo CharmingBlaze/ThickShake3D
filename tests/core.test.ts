@@ -13,9 +13,9 @@ import { deformPoints, lathe, partPrim, PARTS, inflateParts, pathLength, PEN_SEC
 import { bezierAt, insertAnchor, nearestOnOutline, sampleOutline, type PenAnchor } from '../src/core/pen';
 import { splitOutline } from '../src/core/limbs';
 import { blendPixel, brushFootprint, clearRegion, clipRect, copyRegion, flipRegion, floodFill, getPixel, keepInside, linePixels, mapToPalette, pasteRegion, rectPixels, reducePalette, remapPixels, replaceColor, seamTwins, strokeLine, usedColors, uvAtPoint, worldPerTexel, type Brush, type Pixels, type RGBA } from '../src/core/paint';
-import { cellAt, cellCorners, fitTileToFace, placeTileQuad, tileAtPixel, tileCounts, tileForCell, tileOfFace, tilePixels, tileUV, type TileBlock, type TileGrid, type TilePlane } from '../src/core/tiles';
+import { autotileSlot, autotileTemplate, BLOB_MASKS, boxQuads, cellAt, cellCorners, cellsOnPlane, cubeBox, fitTileToFace, placeTileQuad, quadTileCounts, splitQuad, tileAtPixel, tileCounts, tileForCell, tileOfFace, tilePixels, tileUV, type TileBlock, type TileGrid, type TilePlane } from '../src/core/tiles';
 import { addLimb, addStarter, deformPiece, fusePieces, limbFrame, radialPieces, reducePiece, twinOf, alignPieces, arrayPieces, colorsToMaterials, dropPieces, mirrorPiece, pieceBounds, scaleFigure, snapPieces } from '../src/core/blockout';
-import { bounds, dist } from '../src/core/geom';
+import { bounds, cross, dist, dot, sub } from '../src/core/geom';
 import { applyPreset, bakeModelGradient, bakeTextureGradient, blankOrm, evenStops, flipGreen, gradientDirection, guessMapKind, harmonies, hexToHsv, hexToRgb, hsvToHex, MATERIAL_PRESETS, normalFromHeight, packChannel, paletteFromImage, parseHex, parsePaletteText, reverseStops, sampleGradient } from '../src/core/materials';
 import { sampleTrack } from '../src/core/skeleton';
 import { addHumanoid, autoWeights, evalPose, heatWeights, mirrorJoints, mirrorName, mirrorWeights, paintWeight, pruneWeights, qAxisAngle, qFromEuler, qRotate, qToEuler, removeJoints, skinInto, smoothWeights, splitJoint, weightIssues } from '../src/core/skeleton';
@@ -899,6 +899,61 @@ describe('tiles', () => {
     placeTileQuad(m, g, cellCorners({ axis: 1, depth: 0, facing: 1 }, 0, 0, 1), rect);
     expect(faceNormal(m, m.faces[2])[1]).toBeGreaterThan(0.99);
     expect(cellAt(plane, [1.5, 0.2, 0], 1)).toEqual([1, 0]);
+  });
+  it('picks autotiles by their neighbours, in 16 and 47 tile sets', () => {
+    expect(BLOB_MASKS.length).toBe(47);
+    const none = () => false, all = () => true;
+    expect(autotileSlot('47', none)).toEqual({ col: 0, row: 0 });
+    expect(autotileSlot('47', all)).toEqual({ col: 46 % 8, row: 5 });
+    // A corner only counts when both sides beside it are filled.
+    const cornerOnly = (dx: number, dy: number) => dx === 1 && dy === 1;
+    expect(autotileSlot('47', cornerOnly)).toEqual(autotileSlot('47', none));
+    // 16: north and east filled is index 1 + 2 = 3.
+    expect(autotileSlot('16', (dx, dy) => (dx === 0 && dy === 1) || (dx === 1 && dy === 0))).toEqual({ col: 3, row: 0 });
+    expect(autotileSlot('16', all)).toEqual({ col: 3, row: 3 });
+    const t = autotileTemplate('47', 8);
+    expect([t.width, t.height]).toEqual([64, 48]);
+    // The lone tile's corner is background; the full tile's corner is filled.
+    expect(t.data[3]).toBe(255);
+    const at = (x: number, y: number) => Array.from(t.data.slice((y * t.width + x) * 4, (y * t.width + x) * 4 + 3));
+    expect(at(0, 0)).toEqual([34, 36, 44]);
+    expect(at(6 * 8, 5 * 8)).not.toEqual([34, 36, 44]);
+  });
+
+  it('builds tile cubes with every side facing out', () => {
+    const quads = boxQuads([0, 0, 0], [1, 2, 3]);
+    expect(quads.length).toBe(6);
+    for (const q of quads) {
+      const c = [0, 1, 2].map((k) => q.reduce((s, p) => s + p[k], 0) / 4) as V3;
+      const n = cross(sub(q[1], q[0]), sub(q[3], q[0]));
+      const out = sub(c, [0.5, 1, 1.5]);
+      expect(dot(n, out)).toBeGreaterThan(0);
+    }
+    // A cube on the floor sits on it, one cell up; the next layer sits on that.
+    const plane: TilePlane = { axis: 1, depth: 0, facing: 1 };
+    expect(cubeBox(plane, 2, -1, 0.5)).toEqual({ min: [1, 0, -0.5], max: [1.5, 0.5, 0] });
+    expect(cubeBox(plane, 0, 0, 1, 1).min[1]).toBe(1);
+  });
+
+  it('splits a big quad so a tile repeats across it, and finds built tiles by cell', () => {
+    const m = modelOf(prims.plane(3, 2, 1));
+    const f = m.faces[0];
+    expect(quadTileCounts(m, f, 1).slice().sort()).toEqual([2, 3]);
+    const [nu, nv] = quadTileCounts(m, f, 1);
+    const pieces = splitQuad(m, 0, nu, nv);
+    expect(pieces.length).toBe(6);
+    expect(m.faces.length).toBe(6);
+    // Pieces share corners: a 4Ã—3 grid of points.
+    expect(new Set(m.faces.flatMap((x) => x.v)).size).toBe(12);
+    const total = m.faces.reduce((s, x) => s + faceArea(m, x), 0);
+    expect(total).toBeCloseTo(6, 6);
+    // Built tiles on the floor, found by their cells.
+    const b = modelOf(prims.plane(1, 1, 1));
+    const g = b.faces[0].g;
+    const floor: TilePlane = { axis: 1, depth: 0, facing: 1 };
+    placeTileQuad(b, g, cellCorners(floor, 3, 4, 1), [0, 0, 1, 1]);
+    const cells = cellsOnPlane(b, g, floor, 1);
+    expect(cells.get('3,4')).toBe(b.faces.length - 1);
   });
 });
 

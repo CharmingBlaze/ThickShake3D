@@ -5,13 +5,13 @@ import { ed } from '../core/editor';
 import { faceNormal } from '../core/geom';
 import * as ops from '../core/ops';
 import { seamTwins, uvAtPoint, uvToPixel, worldPerTexel } from '../core/paint';
-import { cellAt, cellCorners, faceCell, fitTileToFace, placeTileQuad, tileForCell, tileOfFace, tileUV, type TilePlane } from '../core/tiles';
+import { autotileSlot, boxQuads, cellAt, cellCorners, cellsOnPlane, cubeBox, faceCell, faceInCell, fitTileToFace, NO_TRANSFORM, placeTileQuad, planeAxes, quadTileCounts, splitQuad, tileForCell, tileOfFace, tileUV, type TileGrid, type TilePlane } from '../core/tiles';
 import { makeGroup, type Model, type V3 } from '../core/types';
 import { app } from '../ui/app';
 import { status, toast } from '../ui/feedback';
 import { paint, strokeAlso, strokeBegin, strokeEnd, strokeFlush, strokeHasTip, strokeMove } from '../ui/paintEditor';
 import { texDoc, textureOfFace, type TexDoc } from '../ui/textureDoc';
-import { atlasGrid, atlasMaterial, atlasTexture, tiles, type TileMode } from '../ui/tileEditor';
+import { atlasGrid, atlasMaterial, atlasTexture, rememberTile, tiles, type TileMode } from '../ui/tileEditor';
 import type { Pane } from './pane';
 import * as pick from './picking';
 import type { SceneGraph } from './scene';
@@ -19,6 +19,13 @@ import type { SceneGraph } from './scene';
 export interface SurfaceHost { sg: SceneGraph; invalidate(): void }
 
 const v3 = (p: THREE.Vector3): V3 => [p.x, p.y, p.z];
+
+/** Drop vertices no face uses any more, after cube sides were taken away. */
+function tidyVerts(m: Model) {
+  const used = new Set<number>();
+  for (const f of m.faces) for (const v of f.v) used.add(v);
+  if (used.size < m.verts.length) ops.removeVerts(m, new Set([...m.verts.keys()].filter((v) => !used.has(v))));
+}
 
 // ---------- painting on the model ----------
 export class TexPaintTool {
@@ -139,6 +146,8 @@ interface TileStroke {
   plane: TilePlane | null;
   /** Tiles built on another mesh's face sit a hair in front of it, so they don't flicker. */
   lift: number;
+  /** Stamping a block: the cell the first stamp went in, so the rest line up with it. */
+  anchor: [number, number] | null;
 }
 
 export class TileTool {
@@ -167,9 +176,83 @@ export class TileTool {
     const g = m.groups.find((x) => x.id === f.g);
     if (g && g.material !== mat.id) { g.material = mat.id; ed.emit('groups', 'materials'); }
     const grid = atlasGrid(t);
-    const at = tileForCell(tiles.block, faceCell(m, f, tiles.cell), tiles.random);
-    fitTileToFace(m, f, tileUV(grid, at.col, at.row, tiles.inset ? 0.5 : 0), tiles.xf);
+    // Repeat: a quad bigger than a tile is cut into tile-sized pieces, each taking its own tile.
+    const pieces = tiles.repeat ? splitQuad(m, fi, ...quadTileCounts(m, f, tiles.cell)) : [fi];
+    for (const pi of pieces) {
+      const pf = m.faces[pi];
+      const at = tileForCell(tiles.block, faceCell(m, pf, tiles.cell), tiles.random);
+      fitTileToFace(m, pf, this.rect(grid, at.col, at.row), tiles.xf);
+      this.s?.done.add(`f${pi}`);
+    }
     if (this.s) this.s.changed = true;
+  }
+
+  /** A tile's texture rectangle in the atlas. */
+  private rect(grid: TileGrid, col: number, row: number) { return tileUV(grid, col, row, tiles.inset ? 0.5 : 0); }
+
+  /**
+   * Choose each built tile around a cell from the autotile block, by which of its neighbours are filled. The plane's
+   * cells count along its axes, which may run against the way it reads, so neighbours are looked up the way it reads.
+   */
+  private autotileAround(m: Model, gid: number, plane: TilePlane, i: number, j: number, grid: TileGrid) {
+    const set = tiles.autotile;
+    if (!set) return;
+    const { uSign, vSign } = planeAxes(plane);
+    const cells = cellsOnPlane(m, gid, plane, tiles.cell);
+    for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
+      const ci = i + dx, cj = j + dy;
+      const fi = cells.get(`${ci},${cj}`);
+      if (fi === undefined) continue;
+      const slot = autotileSlot(set, (a, b) => cells.has(`${ci + a * uSign},${cj + b * vSign}`));
+      fitTileToFace(m, m.faces[fi], this.rect(grid, tiles.block.col + slot.col, tiles.block.row + slot.row), NO_TRANSFORM);
+    }
+  }
+
+  /** Build in one cell: a flat tile, or a stack of tile cubes whose touching sides are left out. */
+  private buildCell(m: Model, gid: number, plane: TilePlane, i: number, j: number, col: number, row: number, grid: TileGrid) {
+    const rect = this.rect(grid, col, row);
+    if (tiles.cube) {
+      for (let layer = 0; layer < Math.max(1, tiles.height); layer++) {
+        const { min, max } = cubeBox(plane, i, j, tiles.cell, layer);
+        for (const q of boxQuads(min, max)) {
+          // A side that meets a cube already there is inside the block now: take both away.
+          const there = faceInCell(m, gid, q);
+          if (there >= 0) ops.removeFaces(m, new Set([there]), false);
+          else placeTileQuad(m, gid, q, rect, tiles.xf);
+        }
+      }
+      return;
+    }
+    placeTileQuad(m, gid, cellCorners(plane, i, j, tiles.cell), rect, tiles.autotile ? NO_TRANSFORM : tiles.xf);
+    this.autotileAround(m, gid, plane, i, j, grid);
+  }
+
+  /** Erase the tile cube behind a face, opening up the sides of any cubes beside it. True if anything went. */
+  private eraseCube(m: Model, gid: number, fi: number, grid: TileGrid): boolean {
+    const f = m.faces[fi];
+    const n = faceNormal(m, f);
+    const size = tiles.cell;
+    const c: V3 = [0, 0, 0];
+    for (const v of f.v) for (let k = 0; k < 3; k++) c[k] += m.verts[v].p[k] / f.v.length;
+    const centre: V3 = [c[0] - (n[0] * size) / 2, c[1] - (n[1] * size) / 2, c[2] - (n[2] * size) / 2];
+    const boxAt = (o: V3) => boxQuads([o[0] - size / 2, o[1] - size / 2, o[2] - size / 2], [o[0] + size / 2, o[1] + size / 2, o[2] + size / 2]);
+    const rect = this.rect(grid, tiles.block.col, tiles.block.row);
+    const gone = new Set<number>();
+    const open: V3[][] = [];
+    boxAt(centre).forEach((q, k) => {
+      const there = faceInCell(m, gid, q);
+      if (there >= 0) { gone.add(there); return; }
+      // No face here: a cube beside this one shares the side. If that cube is there, its side shows now.
+      const axis = Math.floor(k / 2), dir = k % 2 ? 1 : -1;
+      const next: V3 = [centre[0], centre[1], centre[2]];
+      next[axis] += dir * size;
+      const others = boxAt(next).filter((_, kk) => kk !== (k ^ 1));
+      if (others.some((qq) => faceInCell(m, gid, qq) >= 0)) open.push([q[0], q[3], q[2], q[1]]);
+    });
+    if (!gone.size) return false;
+    ops.removeFaces(m, gone, false);
+    for (const q of open) placeTileQuad(m, gid, q, rect, tiles.xf);
+    return true;
   }
 
   /** The plane to build on: the flat face under the mouse, lined up with the grid, or else the view's own. */
@@ -224,7 +307,7 @@ export class TileTool {
     const placing = mode === 'place' ? this.planeAt(p, x, y) : null;
     ed.lastOp = null;
     ed.begin({ paint: 'Paint tiles', fill: 'Fill tiles', place: 'Build tiles', erase: 'Erase tiles', pick: '' }[mode]);
-    this.s = { pane: p, mode, changed: false, done: new Set(), plane: placing?.plane ?? null, lift: placing?.lift ?? 0 };
+    this.s = { pane: p, mode, changed: false, done: new Set(), plane: placing?.plane ?? null, lift: placing?.lift ?? 0, anchor: null };
     if (mode === 'fill') {
       const hit = pick.pickFace(p, this.host.sg, x, y, false);
       if (hit) this.fill(hit.face);
@@ -284,7 +367,23 @@ export class TileTool {
       const mat = m.materials.find((x2) => x2.maps.base === t.id);
       const f = m.faces[hit.face];
       if (!mat || m.groups.find((g) => g.id === f.g)?.material !== mat.id) return;
+      const grid = atlasGrid(t);
+      if (tiles.cube) {
+        if (this.eraseCube(m, f.g, hit.face, grid)) { tidyVerts(m); s.done.clear(); s.changed = true; ed.emit('topology'); }
+        return;
+      }
+      // With autotiling, the tiles around a removed one change to suit.
+      const n = faceNormal(m, f);
+      const axis = ([0, 1, 2] as const).reduce((a, b) => (Math.abs(n[b]) > Math.abs(n[a]) ? b : a), 0 as 0 | 1 | 2);
+      const flat: TilePlane | null = tiles.autotile && Math.abs(n[axis]) > 0.999 ? { axis, depth: m.verts[f.v[0]].p[axis], facing: n[axis] > 0 ? 1 : -1 } : null;
+      let cell: [number, number] | null = null;
+      if (flat) {
+        const c: V3 = [0, 0, 0];
+        for (const v of f.v) for (let k = 0; k < 3; k++) c[k] += m.verts[v].p[k] / f.v.length;
+        cell = cellAt(flat, c, tiles.cell);
+      }
       ops.removeFaces(m, new Set([hit.face]));
+      if (flat && cell) this.autotileAround(m, f.g, flat, cell[0], cell[1], grid);
       // Face numbers moved: forget the ones already visited.
       s.done.clear();
       s.changed = true;
@@ -294,13 +393,31 @@ export class TileTool {
     if (s.mode === 'place' && s.plane) {
       const c = this.cellUnder(p, x, y, s.plane, s.lift);
       if (!c) return;
-      const key = `c${c.i},${c.j}`;
-      if (s.done.has(key)) return;
-      s.done.add(key);
       const grid = atlasGrid(t);
       const gid = this.tileGroup(m, t.id);
-      const at = tileForCell(tiles.block, { x: c.i, y: c.j, z: Math.round(s.plane.depth / tiles.cell) }, tiles.random);
-      placeTileQuad(m, gid, c.corners, tileUV(grid, at.col, at.row, tiles.inset ? 0.5 : 0), tiles.xf);
+      const plane: TilePlane = { ...s.plane, depth: s.plane.depth + s.lift };
+      const b = tiles.block;
+      if (tiles.stamp && !tiles.autotile && (b.w > 1 || b.h > 1)) {
+        // The whole block goes down at once, the way it looks in the atlas; dragging lays more beside it, edge to edge.
+        const { uSign, vSign } = planeAxes(plane);
+        const a = s.anchor ?? (s.anchor = [c.i, c.j]);
+        // Steps in cell numbers: across is u, and down the atlas is against the plane's up.
+        const su = b.w * uSign, sv = -b.h * vSign;
+        const ai = a[0] + Math.floor((c.i - a[0]) / su) * su, aj = a[1] + Math.floor((c.j - a[1]) / sv) * sv;
+        const key = `s${ai},${aj}`;
+        if (s.done.has(key)) return;
+        s.done.add(key);
+        for (let dr = 0; dr < b.h; dr++) for (let dc = 0; dc < b.w; dc++) {
+          this.buildCell(m, gid, plane, ai + dc * uSign, aj - dr * vSign, b.col + dc, b.row + dr, grid);
+        }
+      } else {
+        const key = `c${c.i},${c.j}`;
+        if (s.done.has(key)) return;
+        s.done.add(key);
+        const at = tileForCell(b, { x: c.i, y: c.j, z: Math.round(s.plane.depth / tiles.cell) }, tiles.random);
+        this.buildCell(m, gid, plane, c.i, c.j, at.col, at.row, grid);
+      }
+      if (tiles.cube) tidyVerts(m);
       s.changed = true;
       ed.emit('topology', 'groups', 'materials');
     }
@@ -326,7 +443,7 @@ export class TileTool {
     const s = this.s;
     if (!s) return;
     this.s = null;
-    if (s.changed) { ed.commit(); ed.emitAll(); } else ed.cancel();
+    if (s.changed) { ed.commit(); ed.emitAll(); if (s.mode !== 'erase') rememberTile(); } else ed.cancel();
   }
 
   cancel() {

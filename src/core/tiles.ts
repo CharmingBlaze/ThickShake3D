@@ -197,3 +197,184 @@ export function placeTileQuad(m: Model, group: number, corners: V3[], rect: [num
   fitTileToFace(m, m.faces[fi], rect, x);
   return fi;
 }
+
+// ---------- autotiling ----------
+/**
+ * Autotile sets, chosen by which neighbours a tile has. '16' looks at the four sides: a 4×4 block, the tile at
+ * index N + 2E + 4S + 8W in reading order. '47' (the blob set) looks at corners too, a corner counting only when both
+ * sides beside it are filled: an 8×6 block holding the 47 shapes in order of their mask, N 1, NE 2, E 4, SE 8, S 16,
+ * SW 32, W 64, NW 128. Make template draws a set in that layout, to paint over.
+ */
+export type AutotileSet = '16' | '47';
+export const AUTOTILE_BLOCK: Record<AutotileSet, [number, number]> = { 16: [4, 4], 47: [8, 6] };
+
+const N = 1, NE = 2, E = 4, SE = 8, S = 16, SW = 32, W = 64, NW = 128;
+
+/** A blob mask with corners dropped where a side beside them is open, so only 47 shapes remain. */
+function reduceBlob(m: number): number {
+  let r = m & (N | E | S | W);
+  if (m & NE && m & N && m & E) r |= NE;
+  if (m & SE && m & S && m & E) r |= SE;
+  if (m & SW && m & S && m & W) r |= SW;
+  if (m & NW && m & N && m & W) r |= NW;
+  return r;
+}
+
+/** The 47 blob shapes' masks, in the order they sit in the block. */
+export const BLOB_MASKS: number[] = [...new Set(Array.from({ length: 256 }, (_, i) => reduceBlob(i)))].sort((a, b) => a - b);
+
+/**
+ * Which tile of an autotile block a cell takes, given which neighbouring cells are filled: `has(dx, dy)` with dy up.
+ * Returns the tile's place within the block.
+ */
+export function autotileSlot(set: AutotileSet, has: (dx: number, dy: number) => boolean): { col: number; row: number } {
+  if (set === '16') {
+    const i = (has(0, 1) ? 1 : 0) | (has(1, 0) ? 2 : 0) | (has(0, -1) ? 4 : 0) | (has(-1, 0) ? 8 : 0);
+    return { col: i % 4, row: Math.floor(i / 4) };
+  }
+  const m = (has(0, 1) ? N : 0) | (has(1, 1) ? NE : 0) | (has(1, 0) ? E : 0) | (has(1, -1) ? SE : 0)
+    | (has(0, -1) ? S : 0) | (has(-1, -1) ? SW : 0) | (has(-1, 0) ? W : 0) | (has(-1, 1) ? NW : 0);
+  const i = BLOB_MASKS.indexOf(reduceBlob(m));
+  return { col: i % 8, row: Math.floor(i / 8) };
+}
+
+/**
+ * A template image for an autotile set, `tile` pixels a tile, in the layout autotiling reads: each tile shows a filled
+ * shape reaching out to the sides (and corners) it joins, over a dark background. RGBA, rows top first.
+ */
+export function autotileTemplate(set: AutotileSet, tile: number): { width: number; height: number; data: Uint8ClampedArray } {
+  const fill = [96, 168, 92], edge = [58, 112, 58], back = [34, 36, 44];
+  const [bw, bh] = AUTOTILE_BLOCK[set];
+  const width = bw * tile, height = bh * tile;
+  const data = new Uint8ClampedArray(width * height * 4);
+  const masks = set === '16'
+    ? Array.from({ length: 16 }, (_, i) => (i & 1 ? N : 0) | (i & 2 ? E : 0) | (i & 4 ? S : 0) | (i & 8 ? W : 0))
+    : BLOB_MASKS;
+  const b = Math.max(1, Math.round(tile / 4));
+  masks.forEach((m, idx) => {
+    const ox = (idx % bw) * tile, oy = Math.floor(idx / bw) * tile;
+    // Inside the shape: the centre, the sides it joins, and the corners it joins all round.
+    const inside = (x: number, y: number) => {
+      const l = x < b, r = x >= tile - b, t = y < b, d = y >= tile - b;
+      // The 16 set has no corner information: a corner fills when both sides beside it join.
+      const corner = (c: number, s1: number, s2: number) => set === '16' ? !!(m & s1) && !!(m & s2) : !!(m & c);
+      if (!l && !r && !t && !d) return true;
+      if (t && !l && !r) return !!(m & N);
+      if (d && !l && !r) return !!(m & S);
+      if (l && !t && !d) return !!(m & W);
+      if (r && !t && !d) return !!(m & E);
+      if (t && r) return corner(NE, N, E);
+      if (d && r) return corner(SE, S, E);
+      if (d && l) return corner(SW, S, W);
+      return corner(NW, N, W);
+    };
+    for (let y = 0; y < tile; y++) for (let x = 0; x < tile; x++) {
+      const i = ((oy + y) * width + ox + x) * 4;
+      let c = back;
+      if (inside(x, y)) {
+        // A darker rim where the shape meets open ground, so the joins are easy to see.
+        const rim = (x > 0 && !inside(x - 1, y)) || (x < tile - 1 && !inside(x + 1, y)) || (y > 0 && !inside(x, y - 1)) || (y < tile - 1 && !inside(x, y + 1));
+        c = rim ? edge : fill;
+      }
+      data[i] = c[0]; data[i + 1] = c[1]; data[i + 2] = c[2]; data[i + 3] = 255;
+    }
+  });
+  return { width, height, data };
+}
+
+/**
+ * The built tiles lying in a plane, by cell: a map from "i,j" to the face filling it. Only quads of the group whose
+ * corners all sit on the plane and that face its way count.
+ */
+export function cellsOnPlane(m: Model, group: number, p: TilePlane, size: number): Map<string, number> {
+  const out = new Map<string, number>();
+  const { u, v } = planeAxes(p);
+  m.faces.forEach((f, fi) => {
+    if (f.g !== group || f.v.length !== 4) return;
+    if (!f.v.every((k) => Math.abs(m.verts[k].p[p.axis] - p.depth) < 1e-4)) return;
+    if (faceNormal(m, f)[p.axis] * p.facing < 0.5) return;
+    let cu = 0, cv = 0;
+    for (const k of f.v) { cu += m.verts[k].p[u] / 4; cv += m.verts[k].p[v] / 4; }
+    out.set(`${Math.floor(cu / size)},${Math.floor(cv / size)}`, fi);
+  });
+  return out;
+}
+
+// ---------- tile cubes ----------
+/** The six sides of a box, each wound to face outward, for building with tile cubes. */
+export function boxQuads(min: V3, max: V3): V3[][] {
+  const out: V3[][] = [];
+  for (const axis of [0, 1, 2] as const) for (const side of [0, 1] as const) {
+    const a = ((axis + 1) % 3) as 0 | 1 | 2, b = ((axis + 2) % 3) as 0 | 1 | 2;
+    const at = (x: number, y: number): V3 => {
+      const q: V3 = [0, 0, 0];
+      q[axis] = side ? max[axis] : min[axis];
+      q[a] = x ? max[a] : min[a];
+      q[b] = y ? max[b] : min[b];
+      return q;
+    };
+    let quad = [at(0, 0), at(1, 0), at(1, 1), at(0, 1)];
+    const n = cross(sub(quad[1], quad[0]), sub(quad[3], quad[0]));
+    if ((n[axis] > 0) !== (side === 1)) quad = [quad[0], quad[3], quad[2], quad[1]];
+    out.push(quad);
+  }
+  return out;
+}
+
+/** The box a tile cube fills: the cell on the plane, `layer` cubes out from it toward the side the plane faces. */
+export function cubeBox(p: TilePlane, i: number, j: number, size: number, layer = 0): { min: V3; max: V3 } {
+  const { u, v } = planeAxes(p);
+  const min: V3 = [0, 0, 0], max: V3 = [0, 0, 0];
+  min[u] = i * size; max[u] = (i + 1) * size;
+  min[v] = j * size; max[v] = (j + 1) * size;
+  const a = p.depth + layer * size * p.facing, b = a + size * p.facing;
+  min[p.axis] = Math.min(a, b); max[p.axis] = Math.max(a, b);
+  return { min, max };
+}
+
+// ---------- repeating tiles across big faces ----------
+/**
+ * Split a quad into an `nu` by `nv` grid of quads, so a tile can repeat across it. The new pieces share their new
+ * corners; the first takes the face's place and the rest are added at the end. Returns all the pieces.
+ */
+export function splitQuad(m: Model, fi: number, nu: number, nv: number): number[] {
+  const f = m.faces[fi];
+  if (!f || f.v.length !== 4 || (nu <= 1 && nv <= 1)) return [fi];
+  const P = f.v.map((k) => m.verts[k].p);
+  const lerp = (a: V3, b: V3, t: number): V3 => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+  // Points along the edges reuse a vertex already there, as where a neighbour was split the same way.
+  const existing = new Map<string, number>();
+  m.verts.forEach((v, i) => existing.set(key3(v.p), i));
+  const ids: number[][] = [];
+  for (let j = 0; j <= nv; j++) {
+    const row: number[] = [];
+    for (let i = 0; i <= nu; i++) {
+      const corner = i === 0 && j === 0 ? 0 : i === nu && j === 0 ? 1 : i === nu && j === nv ? 2 : i === 0 && j === nv ? 3 : -1;
+      if (corner >= 0) { row.push(f.v[corner]); continue; }
+      const p = lerp(lerp(P[0], P[1], i / nu), lerp(P[3], P[2], i / nu), j / nv);
+      const onEdge = i === 0 || j === 0 || i === nu || j === nv;
+      const found = onEdge ? existing.get(key3(p)) : undefined;
+      if (found !== undefined) { row.push(found); continue; }
+      row.push(m.verts.length);
+      m.verts.push({ p });
+    }
+    ids.push(row);
+  }
+  const out: number[] = [];
+  for (let j = 0; j < nv; j++) for (let i = 0; i < nu; i++) {
+    const v = [ids[j][i], ids[j][i + 1], ids[j + 1][i + 1], ids[j + 1][i]];
+    const piece: Face = { ...f, v, uv: v.map((): V2 => [0, 0]) };
+    if (!out.length) { m.faces[fi] = piece; out.push(fi); } else { m.faces.push(piece); out.push(m.faces.length - 1); }
+  }
+  return out;
+}
+
+/** How many tiles of `size` fit along a quad's two directions, at least one each. */
+export function quadTileCounts(m: Model, f: Face, size: number): [number, number] {
+  if (f.v.length !== 4) return [1, 1];
+  const P = f.v.map((k) => m.verts[k].p);
+  const len = (a: V3, b: V3) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+  const nu = Math.max(1, Math.round((len(P[0], P[1]) + len(P[3], P[2])) / 2 / size));
+  const nv = Math.max(1, Math.round((len(P[1], P[2]) + len(P[0], P[3])) / 2 / size));
+  return [nu, nv];
+}

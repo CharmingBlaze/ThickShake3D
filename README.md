@@ -190,6 +190,11 @@ Pick Tile Editor from the workspace menu (Ctrl+7). The panel on the left shows t
 - **Erase (E)** removes built tiles; it never touches the rest of a model. **Pick (I)**, or Alt-click in any mode, takes the tile a face shows.
 - **Turn and flip:** R turns the tile clockwise and Shift+R back; F flips it left to right and Shift+F upside down. `[` and `]` step through the atlas.
 - **Inset** pulls each tile in by half a pixel, so neighbours never bleed in on smoothed textures.
+- **Repeat** (Paint and Fill): a quad bigger than a tile is cut into tile-sized pieces (Size, in metres), so the tile repeats across it instead of stretching.
+- **Stamp** (Build): a chosen block goes down whole, the way it looks in the atlas; dragging lays more beside it, edge to edge.
+- **Cube** (Build): build tile cubes instead of flat tiles, Height cubes tall. Click a cube's side or top to build onto it. Where cubes meet, the sides between them are left out, so a block of cubes is one closed shape. With Cube on, Erase takes away a whole cube and shows the sides of the cubes beside it.
+- **Autotile** (Build): each built tile is chosen by which of its neighbours are filled, and its neighbours change to suit as you build or erase. Choose the set's first tile in the atlas: Autotile 16 reads a 4×4 block by its sides (tile number N + 2E + 4S + 8W), and Autotile 47 reads an 8×6 block of the 47 blob shapes, corners included. Template makes an atlas in that layout to build with straight away, or to paint over in the Paint workspace.
+- **Recent and Kept:** the strip under the grid settings shows the tiles used lately; Keep saves the chosen tile or block, turned as it is, for this atlas. Click one to choose it again; right click a kept one to remove it.
 
 Every stroke is one undo step.
 

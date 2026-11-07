@@ -1,10 +1,10 @@
 // The Tile workspace's atlas panel: choose tiles from an atlas image, and the settings for putting them on a model.
 import { ed } from '../core/editor';
 import { makeMaterial, newId, uniqueName, type Material, type Texture } from '../core/types';
-import { tileAtPixel, tileCounts, tilePixels, type TileBlock, type TileGrid, type TileTransform } from '../core/tiles';
+import { AUTOTILE_BLOCK, autotileTemplate, tileAtPixel, tileCounts, tilePixels, type AutotileSet, type TileBlock, type TileGrid, type TileTransform } from '../core/tiles';
 import { openFile } from '../io/platform';
 import { app } from './app';
-import { button, checkbox, h, numField, svgIcon } from './dom';
+import { button, checkbox, h, numField, select, svgIcon } from './dom';
 import { status, toast } from './feedback';
 import { onTexturesChanged, setPixelated, workingTexture } from './textureDoc';
 
@@ -26,7 +26,61 @@ export const tiles = {
   depth: 0,
   /** Pull each tile's edges in by half a pixel, so neighbours never bleed in when the texture is smoothed. */
   inset: false,
+  /** Paint and Fill: cut quads bigger than a tile into tile-sized pieces, each with its own tile. */
+  repeat: false,
+  /** Build: lay a chosen block down whole, as a stamp, instead of as a pattern by cell. */
+  stamp: false,
+  /** Build: tile cubes instead of flat tiles, this many tall. */
+  cube: false,
+  height: 1,
+  /** Build: choose each tile from an autotile block by its neighbours. The block starts at the chosen tile. */
+  autotile: null as AutotileSet | null,
+  /** Tiles used lately, newest first, and tiles kept for later. */
+  recent: [] as TileChoice[],
 };
+
+/** A tile or block from the atlas, as it was turned and flipped. */
+export interface TileChoice { block: TileBlock; xf: TileTransform }
+
+const sameChoice = (a: TileChoice, b: TileChoice) => JSON.stringify(a) === JSON.stringify(b);
+
+/** Note the chosen tile as used, for the Recent strip. */
+export function rememberTile() {
+  const c: TileChoice = { block: { ...tiles.block }, xf: { ...tiles.xf } };
+  tiles.recent = [c, ...tiles.recent.filter((x) => !sameChoice(x, c))].slice(0, 12);
+  app.tilesRefresh();
+}
+
+// Kept tiles last between sessions, per atlas image name.
+const STAMP_KEY = 'thickshake.tileStamps';
+function loadStamps(): Record<string, TileChoice[]> {
+  try { return JSON.parse(localStorage.getItem(STAMP_KEY) ?? '{}') ?? {}; } catch { return {}; }
+}
+function saveStamps(all: Record<string, TileChoice[]>) {
+  try { localStorage.setItem(STAMP_KEY, JSON.stringify(all)); } catch { /* storage may be off */ }
+}
+export function stampsFor(t: Texture): TileChoice[] { return loadStamps()[t.name] ?? []; }
+function setStamps(t: Texture, list: TileChoice[]) { const all = loadStamps(); all[t.name] = list; saveStamps(all); }
+
+/** Make a template atlas for an autotile set, in the layout autotiling reads, to paint over in the Paint workspace. */
+export function makeAutotileTemplate(set: AutotileSet) {
+  const size = Math.max(4, tiles.tileW);
+  const img = autotileTemplate(set, size);
+  const cv = document.createElement('canvas');
+  cv.width = img.width; cv.height = img.height;
+  cv.getContext('2d')!.putImageData(new ImageData(new Uint8ClampedArray(img.data), img.width, img.height), 0, 0);
+  const url = cv.toDataURL('image/png');
+  let id = 0;
+  ed.transact('Autotile template', (m) => {
+    id = newId(m);
+    m.textures.push({ id, name: uniqueName(m.textures.map((x) => x.name), `Autotile ${set}`), url, width: img.width, height: img.height, pixelated: true });
+    atlasMaterial(m, id);
+  });
+  Object.assign(tiles, { atlasId: id, tileW: size, tileH: size, marginX: 0, marginY: 0, spacingX: 0, spacingY: 0, autotile: set, mode: 'place' });
+  tiles.block = { col: 0, row: 0, w: 1, h: 1 };
+  app.tilesRefresh();
+  status(`Made an ${set} tile autotile template. Build with it, or paint over it in the Paint workspace to make it your own.`);
+}
 
 const MODE_INFO: Record<TileMode, { label: string; key: string; icon: string; hint: string }> = {
   paint: { label: 'Paint', key: 'P', icon: '<path d="M4 20l4-1 11-11-3-3L5 16z"/>', hint: 'Drag across faces to put the tile on each, fitted to the face.' },
@@ -125,6 +179,7 @@ export class TileEditor {
   private g: CanvasRenderingContext2D;
   private bar: HTMLElement;
   private gridBar: HTMLElement;
+  private listsEl: HTMLElement;
   private readout: HTMLElement;
   private zoom = 0;
   private panX = 0;
@@ -140,14 +195,15 @@ export class TileEditor {
     this.g = this.cv.getContext('2d')!;
     this.bar = h('div', { class: 'paint-bar' });
     this.gridBar = h('div', { class: 'paint-bar tile-grid-bar' });
+    this.listsEl = h('div', { class: 'paint-bar tile-lists' });
     this.readout = h('span', { class: 'muted small' });
     const wrap = h('div', { class: 'uv-wrap' }, this.cv);
-    this.el = h('section', { class: 'uv-editor paint-editor tile-editor', 'aria-label': 'Tile atlas' }, this.bar, this.gridBar, wrap, h('div', { class: 'uv-foot' }, this.readout));
+    this.el = h('section', { class: 'uv-editor paint-editor tile-editor', 'aria-label': 'Tile atlas' }, this.bar, this.gridBar, this.listsEl, wrap, h('div', { class: 'uv-foot' }, this.readout));
     new ResizeObserver(() => this.draw()).observe(wrap);
     this.bind();
     onTexturesChanged(() => this.draw());
     ed.on(['selection', 'materials', 'history', 'groups'], () => { this.renderBar(); this.draw(); });
-    app.tilesRefresh = () => { this.renderBar(); this.draw(); };
+    app.tilesRefresh = () => { this.renderBar(); this.renderLists(); this.draw(); };
     this.renderBar();
   }
 
@@ -155,7 +211,7 @@ export class TileEditor {
     if (t.url !== this.imgUrl) {
       this.imgUrl = t.url;
       const im = new Image();
-      im.onload = () => this.draw();
+      im.onload = () => { this.draw(); this.renderLists(); };
       im.src = t.url;
       this.img = im;
     }
@@ -225,6 +281,12 @@ export class TileEditor {
       const hv = this.tileUnder(t, this.mouse.x, this.mouse.y);
       if (hv) { const [x, y, w, hh] = rectOf({ ...hv, w: 1, h: 1 }); g.fillStyle = 'rgba(255,255,255,0.12)'; g.fillRect(x, y, w, hh); }
     }
+    if (tiles.autotile) {
+      // The autotile block the chosen tile starts.
+      const [aw, ah] = AUTOTILE_BLOCK[tiles.autotile];
+      const [ax, ay, aww, ahh] = rectOf({ col: tiles.block.col, row: tiles.block.row, w: Math.min(aw, cols - tiles.block.col), h: Math.min(ah, rows - tiles.block.row) });
+      g.strokeStyle = '#7fc8f8'; g.setLineDash([5, 3]); g.lineWidth = 2; g.strokeRect(ax + 1, ay + 1, aww - 2, ahh - 2); g.setLineDash([]);
+    }
     const [bx, by, bw, bh] = rectOf(tiles.block);
     g.strokeStyle = '#f2b24c'; g.lineWidth = 2; g.strokeRect(bx + 1, by + 1, bw - 2, bh - 2);
     // The chosen tile as it will go down: turned and flipped.
@@ -263,7 +325,13 @@ export class TileEditor {
         icon('<path d="M3 12h18"/><path d="M7 9l5-5 5 5zM7 15l5 5 5-5z"/>', 'Flip upside down (Shift+F)', () => flipTile('y'), tiles.xf.flipY),
       ),
       checkbox('Random', tiles.random, (v) => { tiles.random = v; this.draw(); }, 'With a block of tiles chosen: a random one on each face, instead of repeating the block as a pattern'),
-      tiles.mode === 'place' ? numField({ label: 'Size', value: tiles.cell, min: 0.01, max: 100, step: 0.01, digits: 3, title: 'A built tile\'s width in metres', onChange: (v) => { tiles.cell = v; } }) : null,
+      tiles.mode === 'paint' || tiles.mode === 'fill' ? checkbox('Repeat', tiles.repeat, (v) => { tiles.repeat = v; }, 'Cut a quad bigger than a tile (Size, in metres) into tile-sized pieces, so the tile repeats across it instead of stretching') : null,
+      tiles.mode === 'paint' || tiles.mode === 'fill' || tiles.mode === 'place' || tiles.mode === 'erase' ? numField({ label: 'Size', value: tiles.cell, min: 0.01, max: 100, step: 0.01, digits: 3, title: 'A tile\'s width in metres: built tiles and cubes, and repeats', onChange: (v) => { tiles.cell = v; } }) : null,
+      tiles.mode === 'place' ? checkbox('Stamp', tiles.stamp, (v) => { tiles.stamp = v; }, 'Put a chosen block down whole, as it looks in the atlas') : null,
+      tiles.mode === 'place' || tiles.mode === 'erase' ? checkbox('Cube', tiles.cube, (v) => { tiles.cube = v; this.renderBar(); }, 'Build tile cubes instead of flat tiles; sides where cubes meet are left out. Erase takes a whole cube.') : null,
+      (tiles.mode === 'place') && tiles.cube ? numField({ label: 'Height', value: tiles.height, min: 1, max: 64, step: 1, digits: 0, title: 'How many cubes tall each click builds', onChange: (v) => { tiles.height = Math.round(v); } }) : null,
+      tiles.mode === 'place' || tiles.mode === 'erase' ? select(tiles.autotile ?? 'off', [['off', 'No autotile'], ['16', 'Autotile 16'], ['47', 'Autotile 47']], (v) => { tiles.autotile = v === 'off' ? null : v as AutotileSet; this.renderBar(); this.draw(); }, 'Choose each built tile by its neighbours, from a block starting at the chosen tile: 4×4 for 16, 8×6 for 47') : null,
+      tiles.autotile && (tiles.mode === 'place' || tiles.mode === 'erase') ? button('Template', () => makeAutotileTemplate(tiles.autotile!), { class: 'btn btn-small', title: 'Make an atlas laid out the way autotiling reads it, to build with or paint over' }) : null,
       tiles.mode === 'place' ? numField({ label: 'Depth', value: tiles.depth, step: 0.01, digits: 3, title: 'Where the view\'s building plane sits along its axis. Page Up and Page Down move it a tile.', onChange: (v) => { tiles.depth = v; app.vp.invalidate(); } }) : null,
       h('span', { class: 'tl-grow' }),
       button('Load atlas…', () => { void loadAtlas(); }, { class: t ? 'btn btn-small' : 'btn btn-small btn-primary', title: 'Use an image of tiles as the atlas' }),
@@ -277,6 +345,48 @@ export class TileEditor {
       n('Margin X', 'marginX', 'Space before the first tile, from the left edge', 0), n('Y', 'marginY', 'Space before the first tile, from the top edge', 0),
       n('Spacing X', 'spacingX', 'Space between tiles across', 0), n('Y', 'spacingY', 'Space between tiles down', 0),
       checkbox('Inset', tiles.inset, (v) => { tiles.inset = v; }, 'Pull each tile in by half a pixel, so neighbours never bleed in on smoothed textures'),
+    );
+  }
+
+  /** Recent tiles, and tiles kept for later: click one to choose it again. */
+  renderLists() {
+    const t = atlasTexture();
+    const im = t ? this.image(t) : null;
+    if (!t) { this.listsEl.replaceChildren(); return; }
+    const grid = atlasGrid(t);
+    const thumb = (c: TileChoice, onRemove?: () => void) => {
+      const s = 26;
+      const cv = h('canvas', { class: 'tile-thumb', width: String(s), height: String(s) }) as HTMLCanvasElement;
+      const g = cv.getContext('2d')!;
+      if (im) {
+        const [x0, y0] = tilePixels(grid, c.block.col, c.block.row);
+        const [x1, y1, w1, h1] = tilePixels(grid, c.block.col + c.block.w - 1, c.block.row + c.block.h - 1);
+        const w = x1 + w1 - x0, hh = y1 + h1 - y0, k = s / Math.max(w, hh);
+        g.imageSmoothingEnabled = false;
+        g.translate(s / 2, s / 2);
+        g.rotate((c.xf.rot * Math.PI) / 2);
+        g.scale(c.xf.flipX ? -1 : 1, c.xf.flipY ? -1 : 1);
+        g.drawImage(im, x0, y0, w, hh, (-w * k) / 2, (-hh * k) / 2, w * k, hh * k);
+      }
+      const b = c.block;
+      return h('button', {
+        class: `tile-thumb-btn${sameChoice(c, { block: tiles.block, xf: tiles.xf }) ? ' active' : ''}`,
+        title: `Tile ${b.col}, ${b.row}${b.w > 1 || b.h > 1 ? `, ${b.w}×${b.h} block` : ''}${onRemove ? '. Right click to remove.' : ''}`,
+        onclick: () => { tiles.block = { ...c.block }; tiles.xf = { ...c.xf }; app.tilesRefresh(); },
+        oncontextmenu: (e: Event) => { e.preventDefault(); onRemove?.(); },
+      }, cv);
+    };
+    const kept = stampsFor(t);
+    this.listsEl.replaceChildren(
+      h('span', { class: 'muted small' }, 'Recent'),
+      h('div', { class: 'tile-thumbs' }, tiles.recent.length ? tiles.recent.map((c) => thumb(c)) : [h('span', { class: 'muted small' }, 'none yet')]),
+      h('span', { class: 'muted small' }, 'Kept'),
+      h('div', { class: 'tile-thumbs' }, kept.map((c, i) => thumb(c, () => { setStamps(t, kept.filter((_, k) => k !== i)); this.renderLists(); }))),
+      button('Keep', () => {
+        const c: TileChoice = { block: { ...tiles.block }, xf: { ...tiles.xf } };
+        if (!kept.some((x) => sameChoice(x, c))) setStamps(t, [...kept, c]);
+        this.renderLists();
+      }, { class: 'btn btn-small', title: 'Keep the chosen tile or block, turned as it is, for this atlas' }),
     );
   }
 
