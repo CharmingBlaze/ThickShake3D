@@ -1,6 +1,7 @@
 // A colour picker: saturation square, hue bar, hex box, eyedropper, recent colours, palettes and matching colours.
 import { harmonies, hexToHsv, hexToRgb, hsvToHex, parseHex, PALETTES, type Palette } from '../core/materials';
 import { h, ICONS, svgIcon } from './dom';
+import { glyph } from './glyphs';
 
 const RECENT_KEY = 'thickshake.recentColors', PALETTE_KEY = 'thickshake.palettes', ACTIVE_KEY = 'thickshake.activePalette';
 
@@ -182,7 +183,7 @@ export function openColorPicker(anchor: HTMLElement, start: string, cb: ColorCal
     onclick: async () => {
       try { setHex((await new window.EyeDropper!().open()).sRGBHex); } catch { /* Cancelled with Esc. */ }
     },
-  }, svgIcon('<path d="M14 4l6 6-3 3-1-1-7 7H6v-3l7-7-1-1z"/>', 15)) : null;
+  }, svgIcon(glyph('picker'), 15)) : null;
 
   const el = h('div', { class: 'color-picker', role: 'dialog', 'aria-label': 'Choose a colour' },
     svWrap, hueWrap,

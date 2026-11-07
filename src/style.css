@@ -151,8 +151,15 @@ body.resizing canvas { pointer-events: none; }
 .dock-tabs button:hover { color: var(--text); }
 .dock-tabs button.active { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
 .dock-body { flex: 1; overflow-y: auto; min-height: 0; scrollbar-width: thin; scrollbar-color: var(--bg-4) transparent; }
-.panel-section { padding: 10px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 7px; }
-.panel-section h3 { font-size: 11px; color: var(--text-3); letter-spacing: 0.02em; }
+.panel-section { border-bottom: 1px solid var(--line); }
+.section-head { display: flex; align-items: center; gap: 6px; width: 100%; padding: 8px 10px 6px; color: var(--text-2); text-align: left; background: transparent; border: 0; cursor: pointer; }
+.section-head:hover { color: var(--text); background: rgba(255, 255, 255, 0.025); }
+.section-head > .icon { transition: transform 0.12s; transform: rotate(90deg); color: var(--text-3); }
+.panel-section.folded .section-head > .icon { transform: rotate(0deg); }
+.section-icon { display: grid; place-items: center; }
+.section-head h3 { font-size: 11.5px; font-weight: 600; color: inherit; letter-spacing: 0.02em; margin: 0; }
+.section-body { display: flex; flex-direction: column; gap: 7px; padding: 2px 10px 12px; }
+.panel-section.folded .section-body { display: none; }
 .muted { color: var(--text-3); }
 .small { font-size: 11px; }
 .readout { color: var(--text-2); }
@@ -192,8 +199,8 @@ body.resizing canvas { pointer-events: none; }
 .optionsbar .num-input { width: 36px; }
 .optionsbar .num-label { padding: 0 4px; }
 .num-input:focus { border-color: var(--accent); outline: none; }
-.panel-section > .num-field .num-input { flex: 1; width: auto; }
-.panel-section > .num-field .num-label { width: 76px; }
+.section-body > .num-field .num-input { flex: 1; width: auto; }
+.section-body > .num-field .num-label { width: 76px; }
 .xyz { display: flex; gap: 3px; }
 .xyz .num-field { flex: 1 1 0; }
 .xyz .num-input { flex: 1; width: 100%; }
@@ -431,3 +438,46 @@ body.dropping::after { content: "Drop to import"; position: fixed; inset: 8px; z
 .keymap-key { font: 11px ui-monospace, Consolas, monospace; padding: 3px 6px; border: 1px solid var(--line-2); border-radius: 0; background: #16181c; color: inherit; cursor: pointer; text-align: center; }
 .keymap-key.changed { border-color: #f2b24c; color: #f2b24c; }
 .keymap-key.listening { border-color: #7fc8f8; color: #7fc8f8; }
+
+/* Modifier cards in the side panel, after Blender's */
+.mod-card { border: 1px solid var(--line-2); background: var(--bg-1); display: flex; flex-direction: column; }
+.mod-card.off { opacity: 0.6; }
+.mod-head { display: flex; align-items: center; gap: 6px; padding: 5px 6px; background: var(--bg-3); border-bottom: 1px solid var(--line-2); }
+.mod-head .mod-name { flex: 1; font-weight: 600; color: var(--text); }
+.mod-head .row-icon.on { color: var(--accent); }
+.mod-body { display: flex; flex-direction: column; gap: 6px; padding: 8px; }
+.prop-row { display: grid; grid-template-columns: 92px 1fr; align-items: center; gap: 8px; }
+.prop-row > .prop-label { text-align: right; color: var(--text-2); font-size: 12px; }
+.prop-row > .prop-label.dim, .prop-row.dim > .prop-label { color: var(--text-3); }
+.axis-toggles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--line-2); border: 1px solid var(--line-2); }
+.axis-toggles button { padding: 3px 0; background: var(--bg-3); color: var(--text-2); border: 0; border-radius: 0; font-weight: 600; cursor: pointer; }
+.axis-toggles button:hover:not(:disabled) { color: var(--text); background: var(--bg-4); }
+.axis-toggles button.on { background: var(--accent); color: var(--accent-ink); }
+.axis-toggles button:disabled { color: var(--text-3); opacity: 0.5; cursor: default; }
+.prop-inline { display: flex; align-items: center; gap: 8px; }
+.prop-inline .num-field { flex: 1; }
+.prop-inline .num-input { width: 100%; }
+.mod-add { display: flex; align-items: center; justify-content: center; gap: 6px; }
+
+/* Mode tools in the side panel */
+.tool-group { display: flex; flex-direction: column; gap: 3px; }
+.tool-group-label { font-size: 10.5px; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.05em; }
+.tool-chips { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; }
+.tool-chip { display: flex; align-items: center; justify-content: space-between; gap: 4px; min-width: 0; padding: 4px 6px; background: var(--bg-3); border: 1px solid var(--line-2); border-radius: 0; color: var(--text); font-size: 12px; cursor: pointer; }
+.tool-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tool-chip kbd { flex: none; font-size: 9.5px; color: var(--text-3); background: none; border: 0; padding: 0; }
+.tool-chip:hover:not(:disabled) { background: var(--bg-4); border-color: var(--text-3); }
+.tool-chip.active { border-color: var(--accent); color: var(--accent); }
+.tool-chip:disabled { opacity: 0.4; cursor: default; }
+
+/* Tooltips */
+.tip { position: fixed; z-index: 10000; max-width: 300px; padding: 8px 10px; background: #15171a; color: var(--text); border: 1px solid var(--line-2); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45); font-size: 12px; line-height: 1.4; pointer-events: none; opacity: 0; transform: translateY(2px); transition: opacity 0.12s ease, transform 0.12s ease; }
+.tip.show { opacity: 1; transform: none; }
+.tip-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.tip-head + .tip-body { margin-top: 5px; padding-top: 5px; border-top: 1px solid var(--line); }
+.tip-name { font-weight: 600; color: var(--text); }
+.tip-combos { display: inline-flex; align-items: center; gap: 4px; flex: none; }
+.tip-keys { display: inline-flex; align-items: center; gap: 2px; }
+.tip-key { min-width: 18px; padding: 1px 5px; text-align: center; font: 600 10.5px ui-monospace, Consolas, monospace; color: var(--accent); background: var(--bg-3); border: 1px solid var(--line-2); border-bottom-width: 2px; }
+.tip-plus, .tip-or { font-size: 10px; color: var(--text-3); }
+.tip-body { color: var(--text-2); white-space: pre-line; }

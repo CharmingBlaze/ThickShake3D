@@ -4,6 +4,7 @@ import { ed } from '../core/editor';
 import { clearRegion, clipRect, copyRegion, dab, flipRegion, floodFill, hexToRgba, keepInside, linePixels, mapToPalette, pasteRegion, rectPixels, reducePalette, replaceColor, rgbaToHex, strokeLine, usedColors, type Brush, type Pixels, type Rect, type RGBA, type UsedColor } from '../core/paint';
 import { app } from './app';
 import { colorStore, openColorPicker } from './colorPicker';
+import { glyph } from './glyphs';
 import { button, checkbox, h, numField, select, svgIcon } from './dom';
 import { status, toast } from './feedback';
 import { addLayer, commitDoc, compositeAt, createTexture, deleteLayer, layoutForPainting, mergeDown, moveLayer, setLayer, onTexturesChanged, pushLive, setPixelated, texDoc, workingFaces, workingTexture, type TexDoc } from './textureDoc';
@@ -31,14 +32,14 @@ export const paint = {
 };
 
 const TOOL_INFO: Record<PaintToolId, { label: string; key: string; icon: string; hint: string }> = {
-  pencil: { label: 'Pencil', key: 'P', icon: '<path d="M4 20l4-1 11-11-3-3L5 16z"/><path d="M14 7l3 3"/>', hint: 'Hard pixels, for pixel art.' },
-  brush: { label: 'Brush', key: 'B', icon: '<path d="M14 4l6 6-8 8-6-6z"/><path d="M6 12c-2 2-3 5-2 8 3 1 6 0 8-2"/>', hint: 'A soft round brush with opacity and hardness.' },
-  eraser: { label: 'Eraser', key: 'E', icon: '<path d="M4 16l9-9 7 7-6 6H8z"/><path d="M9 11l6 6"/>', hint: 'Erases to transparent.' },
-  fill: { label: 'Fill', key: 'G', icon: '<path d="M5 11l7-7 7 7-7 7z"/><path d="M19 15c1 2 2 3 2 4a2 2 0 0 1-4 0c0-1 1-2 2-4z"/>', hint: 'Fills the area of one colour. Tolerance lets near colours count.' },
-  line: { label: 'Line', key: 'L', icon: '<path d="M5 19L19 5"/>', hint: 'Drag a straight line.' },
-  rect: { label: 'Rectangle', key: 'U', icon: '<rect x="5" y="6" width="14" height="12"/>', hint: 'Drag a rectangle, outlined or filled.' },
-  picker: { label: 'Pick colour', key: 'I', icon: '<path d="M14 4l6 6-2 2-6-6z"/><path d="M12 8l-8 8v4h4l8-8"/>', hint: 'Click to take a colour. Alt with any tool picks too.' },
-  select: { label: 'Select', key: 'S', icon: '<rect x="4" y="5" width="16" height="14" stroke-dasharray="3 2"/>', hint: 'Drag a rectangle to select; drag inside it to move what it holds. Painting stays inside. Delete clears it, Ctrl+C, X and V copy, cut and paste, H and V flip it, Ctrl+D lets go.' },
+  pencil: { label: 'Pencil', key: 'P', icon: glyph('draw'), hint: 'Hard pixels, for pixel art.' },
+  brush: { label: 'Brush', key: 'B', icon: glyph('brush'), hint: 'A soft round brush with opacity and hardness.' },
+  eraser: { label: 'Eraser', key: 'E', icon: glyph('eraser'), hint: 'Erases to transparent.' },
+  fill: { label: 'Fill', key: 'G', icon: glyph('fill'), hint: 'Fills the area of one colour. Tolerance lets near colours count.' },
+  line: { label: 'Line', key: 'L', icon: glyph('line'), hint: 'Drag a straight line.' },
+  rect: { label: 'Rectangle', key: 'U', icon: glyph('rect'), hint: 'Drag a rectangle, outlined or filled.' },
+  picker: { label: 'Pick colour', key: 'I', icon: glyph('picker'), hint: 'Click to take a colour. Alt with any tool picks too.' },
+  select: { label: 'Select', key: 'S', icon: glyph('marquee'), hint: 'Drag a rectangle to select; drag inside it to move what it holds. Painting stays inside. Delete clears it, Ctrl+C, X and V copy, cut and paste, H and V flip it, Ctrl+D lets go.' },
 };
 
 export function setPaintTool(t: PaintToolId) {

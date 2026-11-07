@@ -1,4 +1,5 @@
 // ThickShake application shell.
+import { installTooltips } from './ui/tooltip';
 import { applyKeymap } from './ui/keymap';
 import './style.css';
 import { ed, type Workspace } from './core/editor';
@@ -27,14 +28,14 @@ import { Viewports } from './view/viewports';
 // ---------- menus ----------
 const MENUS: [string, (string | null)[]][] = [
   ['File', ['file.new', 'file.open', 'file.openRecent', null, 'file.save', 'file.saveAs', 'file.saveCopy', null, 'file.import', 'file.export', null, 'file.sample', ...(native ? [null, 'file.quit'] : [])]],
-  ['Edit', ['edit.undo', 'edit.redo', null, 'edit.duplicate', 'edit.delete', null, 'select.all', 'select.none', 'select.invert', 'select.grow', 'select.shrink', 'select.linked', null, 'select.loop', 'select.ring', 'select.boundary', 'select.similarNormal']],
+  ['Edit', ['edit.undo', 'edit.redo', null, 'edit.duplicate', 'edit.delete', null, 'select.all', 'select.none', 'select.invert', 'select.grow', 'select.shrink', 'select.linked', null, 'select.loop', 'select.ring', 'select.boundary', 'select.similarNormal', null, 'select.shortestPath', 'select.ngons', 'select.tris', 'select.checker']],
   ['Create', ['tool.box', 'tool.sphere', 'tool.geosphere', 'tool.cylinder', 'tool.cone', 'tool.limb', 'tool.stroke', 'tool.blob', 'tool.pen', 'tool.lathe', 'tool.capsule', 'tool.tapered', 'tool.pyramid', 'tool.wedge', 'tool.stairs', 'tool.doorway', 'tool.plane', 'tool.torus', null, 'create.lowPoly', 'create.onSurface', null, 'tool.vertex', 'tool.face', 'tool.joint']],
-  ['Mesh', ['tool.extrude', 'mesh.inset', 'tool.loopcut', 'tool.knife', 'mesh.subdivide', 'mesh.makeFace', 'mesh.fillHoles', null, 'mesh.weld', 'mesh.collapse', 'mesh.weldAll', 'mesh.smoothVerts', null, 'mesh.triangulate', 'mesh.quadify', 'mesh.mirror', null, 'mesh.detach', 'mesh.regroup', 'mesh.mergeGroups', null, 'mesh.flip', 'mesh.fixNormals', 'mesh.smoothShade', 'mesh.flatShade', 'mesh.autoSmooth', null, 'mesh.centerOrigin', 'mesh.ground', 'mesh.rescale']],
+  ['Mesh', ['tool.extrude', 'mesh.extrudeHere', 'mesh.inset', 'mesh.bevel', 'tool.loopcut', 'tool.knife', 'mesh.subdivide', 'mesh.connect', 'mesh.poke', null, 'mesh.makeFace', 'mesh.fillHoles', 'mesh.gridFill', 'mesh.fill', 'mesh.bridge', null, 'loop.circle', 'loop.flatten', 'loop.space', 'loop.curve', 'mesh.smoothVerts', null, 'mesh.merge', 'mesh.dissolve', 'mesh.weld', 'mesh.collapse', 'mesh.weldAll', null, 'mesh.solidify', 'mesh.spin', 'mesh.mirror', 'mesh.triangulate', 'mesh.quadify', null, 'mesh.detach', 'mesh.regroup', 'mesh.separateLoose', 'mesh.mergeGroups', null, 'mesh.flip', 'mesh.fixNormals', 'mesh.smoothShade', 'mesh.flatShade', 'mesh.autoSmooth', null, 'mesh.centerOrigin', 'mesh.ground', 'mesh.rescale']],
   ['UV', ['uv.unwrap', 'uv.smart', null, 'uv.box', 'uv.planarView', 'uv.cylinder', 'uv.sphere', null, 'uv.pack', 'uv.minimize', 'uv.average', 'uv.fit', 'uv.density', null, 'uv.markSeam', 'uv.clearSeam', 'uv.seamsFromIslands', 'uv.clearAllSeams', null, 'uv.exportLayout']],
   ['Rig', ['rig.humanoid', 'tool.joint', 'rig.split', 'rig.mirrorJoints', null, 'rig.autoWeightsAll', 'rig.autoWeights', 'rig.assign', 'rig.clear', null, 'tool.paint', 'rig.smooth', 'rig.mirrorWeights', 'rig.prune', 'rig.selectUnweighted', null, 'rig.testPose', 'rig.resetPose']],
   ['Animate', ['anim.play', 'anim.togglePose', 'tool.ik', null, 'anim.key', 'anim.deleteKey', 'anim.prevKey', 'anim.nextKey', null, 'anim.copyPose', 'anim.pastePose', 'anim.pasteMirrored', 'anim.mirrorPose', 'anim.resetPose', null, 'anim.newClip', 'anim.duplicateClip', 'anim.deleteClip', 'anim.makeLoop', 'anim.mirrorClip', 'anim.reverse', 'anim.retime', 'anim.reduce', 'anim.bake', null, 'anim.onion', 'anim.trail']],
   ['Game', ['mesh.generateLods', 'mesh.collisionHull', 'mesh.collisionBox', null, 'game.bake', 'game.atlas', null, 'mesh.cleanDegenerate', 'mesh.cleanLoose', 'mesh.triangulateNgons', null, 'file.export']],
-  ['View', ['view.frame', 'view.frameAll', 'view.maximize', 'view.center', 'view.zoomIn', 'view.zoomOut', 'view.level', 'view.link', null, 'ref.addFront', 'ref.addRight', 'ref.addTop', null, 'view.xray', 'view.wire', 'view.grid', 'view.bones', 'view.boneNames', 'view.timeline', null, 'view.snap', 'view.mirrorX', ...(native ? [null, 'view.fullscreen', 'view.devtools'] : [])]],
+  ['View', ['view.frame', 'view.frameAll', 'view.maximize', 'view.center', 'view.zoomIn', 'view.zoomOut', 'view.level', 'view.link', null, 'ref.addFront', 'ref.addRight', 'ref.addTop', null, 'view.xray', 'view.wire', 'view.backFaces', 'view.grid', 'view.bones', 'view.boneNames', 'view.timeline', null, 'view.snap', 'view.mirrorX', ...(native ? [null, 'view.fullscreen', 'view.devtools'] : [])]],
   ['Help', ['help.palette', 'help.shortcuts', 'help.keymap', null, 'help.about']],
 ];
 
@@ -260,7 +261,7 @@ function renderOptions() {
       toolOpts.length ? h('span', { class: 'tl-sep' }) : null,
       toolOpts,
       h('span', { class: 'tl-grow' }),
-      h('button', { class: 'palette-hint', onclick: () => runCommand('help.palette'), title: 'Search all commands (Ctrl+K)', 'aria-label': 'Search all commands' }, svgIcon(ICONS.zoom, 15)),
+      h('button', { class: 'palette-hint', onclick: () => runCommand('help.palette'), title: 'Search all commands (Ctrl+K)', 'aria-label': 'Search all commands' }, svgIcon(ICONS.search, 15)),
       button('Export', () => runCommand('file.export'), { class: 'btn btn-primary btn-small', title: 'Export for your game engine (Ctrl+E)' }),
     ];
   });
@@ -342,6 +343,7 @@ function applyTimeline() {
   timeline.draw();
 }
 app.toggleTimeline = () => { timelineVisible = !timelineVisible; applyTimeline(); };
+app.timelineShown = () => timelineVisible;
 
 /** What Blockout changes on the way in, so it can all go back on the way out. */
 let beforeBlock: { surface: boolean; mirror: boolean; wire: boolean; shading: Shading[] } | null = null;
@@ -392,7 +394,8 @@ function setWorkspace(w: Workspace) {
     case 'uv':
       ed.pose = false;
       vp.setLayout('single', persp);
-      persp.shading = 'checker';
+      // The checker shows stretching on parts with no picture yet; a part with one shows it.
+      persp.shading = texturedParts() ? 'pbr' : 'checker';
       timelineVisible = false;
       app.showTab('material');
       if (ed.mode === 'bone') ed.setMode('face');
@@ -494,6 +497,31 @@ bindResizer(uvSplit, (e) => {
   setLayoutVar('--uv-w', `${((w / r.width) * 100).toFixed(2)}%`);
 }, '--uv-w');
 
+// ---------- pictures on parts ----------
+/** How many visible parts show a colour image through their material. */
+function texturedParts(): number {
+  const m = ed.model;
+  return m.groups.filter((g) => g.visible && g.material !== null && m.materials.find((x) => x.id === g.material)?.maps.base !== undefined).length;
+}
+
+// When a part gets a picture, views showing the UV checker switch to the material, so the picture shows at once.
+let texturedBefore = texturedParts();
+ed.on(['materials', 'groups', 'history'], () => {
+  const n = texturedParts();
+  if (n > texturedBefore) {
+    const switched = vp.panes.filter((p) => p.shading === 'checker');
+    switched.forEach((p) => { p.shading = 'pbr'; });
+    if (switched.length) {
+      vp.syncHeaders();
+      vp.invalidate();
+      setTimeout(() => toast('Showing the material with your image. Pick UV Checker in the view\'s menu to check stretching again.', 'info', 4500));
+    }
+  }
+  texturedBefore = n;
+});
+// A project opened or started afresh is the new starting point.
+ed.on(['file'], () => { texturedBefore = texturedParts(); });
+
 // ---------- events ----------
 ed.on(['tool', 'history', 'selection', 'view', 'topology'], scheduleOptions);
 ed.on(['history', 'topology', 'selection', 'file'], () => { renderWelcome(); renderStatus(); });
@@ -585,6 +613,8 @@ native?.onRequestClose(async () => {
 if (!native) window.addEventListener('beforeunload', (e) => { if (ed.dirty) e.preventDefault(); });
 
 bindShortcuts();
+// Styled tooltips, with shortcuts as keys, for every control.
+installTooltips();
 // Your own shortcuts over the built-in ones.
 applyKeymap();
 

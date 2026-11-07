@@ -9,6 +9,11 @@ export const VIEW_LABELS: Record<ViewKind, string> = {
   persp: 'Perspective', top: 'Top', bottom: 'Bottom', front: 'Front', back: 'Back', left: 'Left', right: 'Right',
 };
 
+/** Turning speed while orbiting: Blender's turntable default, 0.4 degrees per pixel. */
+export const ORBIT_PER_PIXEL = (0.4 * Math.PI) / 180;
+
+const wrapAngle = (a: number) => Math.atan2(Math.sin(a), Math.cos(a));
+
 const ORTHO: Record<Exclude<ViewKind, 'persp'>, { dir: V3; up: V3 }> = {
   top: { dir: [0, 1, 0], up: [0, 0, -1] },
   bottom: { dir: [0, -1, 0], up: [0, 0, 1] },
@@ -46,7 +51,32 @@ export class Pane {
   get camera(): THREE.Camera { return this.kind === 'persp' ? this.persp : this.ortho; }
   get isOrtho() { return this.kind !== 'persp'; }
 
-  setKind(k: ViewKind) { this.kind = k; this.update(); }
+  /** The orthographic view this pane last showed, for switching back from perspective. */
+  lastOrtho: Exclude<ViewKind, 'persp'> = 'front';
+
+  setKind(k: ViewKind) {
+    if (k !== 'persp') this.lastOrtho = k;
+    this.kind = k;
+    this.update();
+  }
+
+  /**
+   * Switch to perspective looking the way this pane's orthographic view does, so the change doesn't jump: as Blender
+   * does when you orbit out of a front or side view.
+   */
+  perspFromOrtho() {
+    if (this.kind === 'persp') return;
+    const d = ORTHO[this.kind].dir;
+    this.pitch = Math.asin(Math.max(-1, Math.min(1, d[1])));
+    // Straight above or below, the heading comes from the view's up instead.
+    const up = ORTHO[this.kind].up;
+    this.yaw = Math.abs(d[1]) > 0.99 ? Math.atan2(-up[0] * d[1], -up[2] * d[1]) : Math.atan2(d[0], d[2]);
+    this.dist = Math.max(0.05, this.orthoHeight * 1.2);
+    this.setKind('persp');
+  }
+
+  /** Whether the perspective view is past a pole, so the world's up points down the screen. */
+  get upsideDown() { return this.kind === 'persp' && Math.cos(this.pitch) < 0; }
 
   update() {
     const aspect = Math.max(1, this.w) / Math.max(1, this.h);
@@ -57,7 +87,9 @@ export class Pane {
         this.target.y + this.dist * sp,
         this.target.z + this.dist * cp * Math.cos(this.yaw),
       );
-      this.persp.up.set(0, 1, 0);
+      // Up comes from the pitch itself, so the view rolls smoothly over the poles as Blender's turntable does,
+      // rather than world up, which can't say which way is up when looking straight down.
+      this.persp.up.set(-sp * Math.sin(this.yaw), cp, -sp * Math.cos(this.yaw));
       this.persp.aspect = aspect;
       this.persp.near = Math.max(0.001, this.dist / 1000);
       this.persp.far = Math.max(100, this.dist * 200);
@@ -146,20 +178,25 @@ export class Pane {
   }
 
   /**
-   * Turn the view by a mouse movement. With a `pivot`, the camera swings around that point instead of the view's
-   * centre, so the point stays put on screen: the whole camera rig, centre included, turns around it.
+   * Turn the view by a mouse movement, Blender's turntable way: sideways turns about the world's up axis, up and down
+   * tilts about the view's own horizontal, with no stop at the poles. `reverse` swaps sideways for a drag that began
+   * upside down, so the scene still follows the mouse. With a `pivot`, the camera swings around that point instead of
+   * the view's centre, so the point stays put on screen.
    */
-  orbit(dx: number, dy: number, pivot?: THREE.Vector3) {
-    const yaw0 = this.yaw, pitch0 = this.pitch;
-    this.yaw -= dx * 0.008;
-    this.pitch = Math.max(-1.55, Math.min(1.55, this.pitch + dy * 0.008));
+  orbit(dx: number, dy: number, pivot?: THREE.Vector3, reverse = false) {
+    this.turn(-dx * ORBIT_PER_PIXEL * (reverse ? -1 : 1), dy * ORBIT_PER_PIXEL, pivot);
+  }
+
+  /** Turn the view by angles, in radians: about the world's up axis, and tilting about the view's horizontal. */
+  turn(dYaw: number, dPitch: number, pivot?: THREE.Vector3) {
+    const yaw0 = this.yaw;
+    this.yaw = wrapAngle(this.yaw + dYaw);
+    this.pitch = wrapAngle(this.pitch + dPitch);
     if (pivot && this.kind === 'persp') {
-      const dirAt = (yaw: number, pitch: number) => new THREE.Vector3(Math.cos(pitch) * Math.sin(yaw), Math.sin(pitch), Math.cos(pitch) * Math.cos(yaw));
-      // Tilt about the camera's right axis, then turn about the world's up axis: the same turn the view itself makes.
-      const tilt = new THREE.Quaternion().setFromUnitVectors(dirAt(yaw0, pitch0), dirAt(yaw0, this.pitch));
-      const turn = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), this.yaw - yaw0);
-      const q = turn.multiply(tilt);
-      this.target.sub(pivot).applyQuaternion(q).add(pivot);
+      // Tilt about the view's horizontal axis, then turn about world up: the same turn the view itself makes.
+      const tilt = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(-Math.cos(yaw0), 0, Math.sin(yaw0)), dPitch);
+      const spin = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), dYaw);
+      this.target.sub(pivot).applyQuaternion(spin.multiply(tilt)).add(pivot);
     }
     this.update();
   }

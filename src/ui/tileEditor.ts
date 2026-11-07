@@ -5,6 +5,7 @@ import { AUTOTILE_BLOCK, autotileTemplate, tileAtPixel, tileCounts, tilePixels, 
 import { openFile } from '../io/platform';
 import { app } from './app';
 import { button, checkbox, h, numField, select, svgIcon } from './dom';
+import { glyph } from './glyphs';
 import { status, toast } from './feedback';
 import { onTexturesChanged, setPixelated, workingTexture } from './textureDoc';
 
@@ -83,11 +84,11 @@ export function makeAutotileTemplate(set: AutotileSet) {
 }
 
 const MODE_INFO: Record<TileMode, { label: string; key: string; icon: string; hint: string }> = {
-  paint: { label: 'Paint', key: 'P', icon: '<path d="M4 20l4-1 11-11-3-3L5 16z"/>', hint: 'Drag across faces to put the tile on each, fitted to the face.' },
-  fill: { label: 'Fill', key: 'G', icon: '<path d="M5 11l7-7 7 7-7 7z"/><path d="M19 15c1 2 2 3 2 4a2 2 0 0 1-4 0c0-1 1-2 2-4z"/>', hint: 'Click a face to tile every face connected to it on the same flat surface.' },
-  place: { label: 'Build', key: 'T', icon: '<rect x="4" y="4" width="7" height="7"/><rect x="13" y="4" width="7" height="7"/><rect x="4" y="13" width="7" height="7"/><path d="M16.5 14v6M13.5 17h6"/>', hint: 'Click or drag to add tile squares: on the face under the mouse, or on the view\'s grid plane. Page Up and Page Down move that plane.' },
-  erase: { label: 'Erase', key: 'E', icon: '<path d="M4 16l9-9 7 7-6 6H8z"/>', hint: 'Drag across built tiles to remove them.' },
-  pick: { label: 'Pick', key: 'I', icon: '<path d="M14 4l6 6-2 2-6-6z"/><path d="M12 8l-8 8v4h4l8-8"/>', hint: 'Click a face to choose the tile it shows. Alt does this with any mode.' },
+  paint: { label: 'Paint', key: 'P', icon: glyph('brush'), hint: 'Drag across faces to put the tile on each, fitted to the face.' },
+  fill: { label: 'Fill', key: 'G', icon: glyph('fill'), hint: 'Click a face to tile every face connected to it on the same flat surface.' },
+  place: { label: 'Build', key: 'T', icon: glyph('tool-poly-build'), hint: 'Click or drag to add tile squares: on the face under the mouse, or on the view\'s grid plane. Page Up and Page Down move that plane.' },
+  erase: { label: 'Erase', key: 'E', icon: glyph('eraser'), hint: 'Drag across built tiles to remove them.' },
+  pick: { label: 'Pick', key: 'I', icon: glyph('picker'), hint: 'Click a face to choose the tile it shows. Alt does this with any mode.' },
 };
 
 export function setTileMode(mode: TileMode) {
@@ -319,10 +320,10 @@ export class TileEditor {
     this.bar.replaceChildren(...[
       h('div', { class: 'paint-tools' }, (Object.keys(MODE_INFO) as TileMode[]).map(modeBtn)),
       h('div', { class: 'paint-tools' },
-        icon('<path d="M20 12a8 8 0 1 1-2.6-5.9"/><path d="M20 3v5h-5"/>', 'Turn clockwise (R)', () => turnTile(1)),
-        icon('<path d="M4 12a8 8 0 1 0 2.6-5.9"/><path d="M4 3v5h5"/>', 'Turn anticlockwise (Shift+R)', () => turnTile(-1)),
-        icon('<path d="M12 3v18"/><path d="M9 7L4 12l5 5zM15 7l5 5-5 5z"/>', 'Flip left to right (F)', () => flipTile('x'), tiles.xf.flipX),
-        icon('<path d="M3 12h18"/><path d="M7 9l5-5 5 5zM7 15l5 5 5-5z"/>', 'Flip upside down (Shift+F)', () => flipTile('y'), tiles.xf.flipY),
+        icon(glyph('rotate-cw'),  'Turn clockwise (R)', () => turnTile(1)),
+        icon(glyph('rotate-ccw'),  'Turn anticlockwise (Shift+R)', () => turnTile(-1)),
+        icon(glyph('flip-horizontal'),  'Flip left to right (F)', () => flipTile('x'), tiles.xf.flipX),
+        icon(glyph('flip-vertical'),  'Flip upside down (Shift+F)', () => flipTile('y'), tiles.xf.flipY),
       ),
       checkbox('Random', tiles.random, (v) => { tiles.random = v; this.draw(); }, 'With a block of tiles chosen: a random one on each face, instead of repeating the block as a pattern'),
       tiles.mode === 'paint' || tiles.mode === 'fill' ? checkbox('Repeat', tiles.repeat, (v) => { tiles.repeat = v; }, 'Cut a quad bigger than a tile (Size, in metres) into tile-sized pieces, so the tile repeats across it instead of stretching') : null,

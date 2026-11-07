@@ -1,8 +1,9 @@
 // A toolbar button that opens a dropdown of commands.
 import { commands, runCommand } from './commands';
 import { h, ICONS, svgIcon } from './dom';
+import { glyph } from './glyphs';
 
-const CHEVRON = '<path d="M6 9l6 6 6-6"/>';
+const CHEVRON = glyph('chevron-down');
 let open: { menu: HTMLElement; button: HTMLElement } | null = null;
 
 function closeMenu() {

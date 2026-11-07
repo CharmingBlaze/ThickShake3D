@@ -3,10 +3,10 @@ import { BLOCK_COLORS, blockColorOf } from '../core/blockout';
 import { PARTS } from '../core/organic';
 import { BUDGETS, runChecks, triangleCount } from '../core/checks';
 import { ed } from '../core/editor';
-import { bounds } from '../core/geom';
+import { bounds, edgeKey } from '../core/geom';
 import { groupFaces, pruneEmptyGroups, removeLoose } from '../core/ops';
 import { applyPreset, bakeModelGradient, bakeTextureGradient, blankOrm, evenStops, flipGreen, GRADIENT_PRESETS, gradientCss, guessMapKind, MATERIAL_PRESETS, newGradient, normalFromHeight, packChannel, paletteFromImage, parsePaletteText, reverseStops, type MaterialLook, type OrmChannel } from '../core/materials';
-import { makeGroup, makeMaterial, newId, uniqueName, type Gradient, type MapSlot, type Material, type Model, type V2, type V3 } from '../core/types';
+import { makeGroup, makeMaterial, newId, uniqueName, type Gradient, type MapSlot, type Material, type MirrorMod, type Model, type V2, type V3 } from '../core/types';
 import { unwrap as unwrapUV, uvOverlaps } from '../core/uv';
 import { MaterialPreview } from '../view/materialView';
 import { colorButton, colorStore, type ColorCallbacks } from './colorPicker';
@@ -18,14 +18,16 @@ import { commands, runCommand, TOOLS } from './commands';
 import { button, checkbox, h, ICONS, numField, renderInto, section, select, svgIcon } from './dom';
 import { toast } from './feedback';
 import { constraintsSection } from './constraintPanel';
+import { applyMirror, MIRROR_DEFAULTS, mirrorOf } from '../core/mirror';
+import { glyph } from './glyphs';
 
 let budgetId = 'indie';
 export const panelState = { tab: 'scene' };
 
-const eyeOn = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>';
-const eyeOff = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M3 3l18 18M10 5.3A10 10 0 0 1 12 5c6 0 10 7 10 7a17 17 0 0 1-3.3 4M6.5 6.7A17 17 0 0 0 2 12s4 7 10 7a10 10 0 0 0 4-.8"/></svg>';
-const lockOn = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>';
-const lockOff = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" opacity=".4" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V7a4 4 0 0 1 7.5-2"/></svg>';
+const eyeOn = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">${glyph('eye-open')}</svg>`;
+const eyeOff = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">${glyph('eye-closed')}</svg>`;
+const lockOn = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">${glyph('lock')}</svg>`;
+const lockOff = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" opacity=".4" aria-hidden="true">${glyph('unlock')}</svg>`;
 
 const cmd = (id: string, label: string, title?: string) => button(label, () => runCommand(id), { title });
 
@@ -116,9 +118,18 @@ function groupRows() {
       class: `row${ed.activeGroup === g.id ? ' active' : ''}`,
       onclick: (e: MouseEvent) => {
         ed.activeGroup = g.id;
-        if (g.visible && !g.locked && ed.mode !== 'bone' && ed.mode !== 'vertex' && ed.mode !== 'edge') {
-          if (!e.shiftKey) ed.selFaces.clear();
-          faces.forEach((f) => ed.selFaces.add(f));
+        if (g.visible && !g.locked && ed.mode !== 'bone') {
+          // The group's faces, or in Vertex and Edge mode its points or edges. Shift adds to what's selected.
+          if (ed.mode === 'vertex') {
+            if (!e.shiftKey) ed.selVerts.clear();
+            faces.forEach((f) => m.faces[f].v.forEach((v) => ed.selVerts.add(v)));
+          } else if (ed.mode === 'edge') {
+            if (!e.shiftKey) ed.selEdges.clear();
+            faces.forEach((f) => { const fv = m.faces[f].v; fv.forEach((a, i) => ed.selEdges.add(edgeKey(a, fv[(i + 1) % fv.length]))); });
+          } else {
+            if (!e.shiftKey) ed.selFaces.clear();
+            faces.forEach((f) => ed.selFaces.add(f));
+          }
         }
         ed.emit('selection', 'groups');
       },
@@ -280,10 +291,186 @@ function referenceSection() {
   );
 }
 
+/**
+ * Mirror, as Blender's Mirror modifier: shown whenever Mirror is on, or the active part has a mirror. Symmetry editing
+ * (Mirror X) sits at the top; below it, the active part's live mirror in a card.
+ */
+function mirrorSection(): HTMLElement | null {
+  const m = ed.model;
+  const g = m.groups.find((x) => x.id === ed.activeGroup) ?? null;
+  const mod = g ? mirrorOf(m, g.id) : null;
+  if (!ed.mirrorX && !mod) return null;
+  const edit = (label: string, fn: (mm: MirrorMod) => void) => {
+    if (!g) return;
+    ed.transact(label, (d) => {
+      const gg = d.groups.find((x) => x.id === g.id);
+      if (!gg) return;
+      gg.mirror = { ...MIRROR_DEFAULTS, ...gg.mirror };
+      fn(gg.mirror);
+    });
+    ed.emit('topology');
+  };
+  const symmetry = checkbox('Edit both sides (symmetry across X)', ed.mirrorX, () => runCommand('view.mirrorX'),
+    'Moves, sculpting, weight painting and new faces work on both sides of X at once');
+  if (!g) return section('Mirror', symmetry, h('p', { class: 'muted small' }, 'Pick a part in Groups to give it a live mirror.'));
+  if (!mod) {
+    return section('Mirror', symmetry,
+      button(h('span', { class: 'mod-add' }, svgIcon(glyph('plus'), 14), `Add Mirror to ${g.name}`), () => edit('Add mirror', () => {}), { class: 'btn', title: 'Show this part mirrored across X, live, as Blender\'s Mirror modifier does' }),
+      h('p', { class: 'muted small' }, 'Model one side; the other shows mirrored and joins along the seam when applied or exported.'));
+  }
+  const axes = ['X', 'Y', 'Z'];
+  const toggles = (key: 'axis' | 'bisect' | 'flip', enabled: (i: number) => boolean, title: string) => h('div', { class: 'axis-toggles' }, axes.map((a, i) =>
+    h('button', {
+      class: mod[key][i] && enabled(i) ? 'on' : '', disabled: !enabled(i), title: `${title} ${a}`, 'aria-pressed': String(mod[key][i]),
+      onclick: () => edit(`Mirror ${key} ${a}`, (mm) => { mm[key][i] = !mm[key][i]; }),
+    }, a)));
+  const row = (label: string, control: Node, dim = false) => h('div', { class: `prop-row${dim ? ' dim' : ''}` }, h('span', { class: 'prop-label' }, label), control);
+  const anyBisect = mod.bisect.some((b, i) => b && mod.axis[i]);
+  const pivotValue = mod.pivot ? `${mod.pivot.kind === 'joint' ? 'j' : 'g'}:${mod.pivot.id}` : 'origin';
+  const pivots: [string, string][] = [['origin', 'World origin'],
+    ...m.bones.map((b): [string, string] => [`j:${b.id}`, `Joint: ${b.name}`]),
+    ...m.groups.filter((x) => x.id !== g.id).map((x): [string, string] => [`g:${x.id}`, `Centre of ${x.name}`])];
+  const icon = (glyphName: Parameters<typeof glyph>[0], title: string, run: () => void, on = false) =>
+    h('button', { class: `row-icon${on ? ' on' : ''}`, title, 'aria-label': title, onclick: run, html: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">${glyph(glyphName)}</svg>` });
+  const card = h('div', { class: `mod-card${mod.on ? '' : ' off'}` },
+    h('div', { class: 'mod-head' },
+      h('span', { class: 'section-icon', html: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">${glyph('modifier-mirror')}</svg>` }),
+      h('span', { class: 'mod-name' }, 'Mirror'),
+      icon(mod.on ? 'eye-open' : 'eye-closed', mod.on ? 'Shown in the view and exported: click to turn off' : 'Off: click to show it again', () => edit(mod.on ? 'Mirror off' : 'Mirror on', (mm) => { mm.on = !mm.on; }), mod.on),
+      icon('check', 'Apply: make the mirrored half real geometry', () => { ed.transact('Apply mirror', (d) => applyMirror(d, g.id)); ed.emit('topology'); toast(`Applied the mirror to ${g.name}.`, 'ok'); }),
+      icon('close', 'Remove the mirror', () => { ed.transact('Remove mirror', (d) => { const gg = d.groups.find((x) => x.id === g.id); if (gg) delete gg.mirror; }); ed.emit('topology'); }),
+    ),
+    h('div', { class: 'mod-body' },
+      row('Axis', toggles('axis', () => true, 'Mirror across')),
+      row('Bisect', toggles('bisect', (i) => mod.axis[i], 'Cut at the mirror plane across'), !mod.axis.some(Boolean)),
+      row('Flip', toggles('flip', (i) => mod.axis[i] && mod.bisect[i], 'Keep the other side when cutting across'), !anyBisect),
+      row('Mirror object', select<string>(pivotValue, pivots, (v) => edit('Mirror object', (mm) => {
+        if (v === 'origin') mm.pivot = null;
+        else mm.pivot = { kind: v.startsWith('j:') ? 'joint' : 'group', id: Number(v.slice(2)) };
+      }), 'What the mirror planes pass through')),
+      row('', checkbox('Clipping', mod.clipping, (v) => edit('Mirror clipping', (mm) => { mm.clipping = v; }), 'Points can\'t cross the mirror plane while you edit, and points on it stay on it')),
+      row('Merge', h('div', { class: 'prop-inline' },
+        checkbox('', mod.merge, (v) => edit('Mirror merge', (mm) => { mm.merge = v; }), 'Join points on the seam with their mirrored copies'),
+        numField({ value: mod.mergeDistance, min: 0, max: 10, step: 0.0005, digits: 4, title: 'How close to the seam a point joins its copy, in metres', onChange: (v) => edit('Merge distance', (mm) => { mm.mergeDistance = v; }) }))),
+      row('Bisect distance', numField({ value: mod.bisectDistance, min: 0, max: 10, step: 0.0005, digits: 4, title: 'How close to the plane a point counts as on it, when cutting', onChange: (v) => edit('Bisect distance', (mm) => { mm.bisectDistance = v; }) }), !anyBisect),
+    ),
+  );
+  return section('Mirror', symmetry, card, h('p', { class: 'muted small' }, 'Live in the view; Apply makes it real, and exports apply it for you.'));
+}
+
+/** Tools for the current selection mode, in groups, as [command, short label]. */
+const MODE_TOOLS: Record<string, { title: string; groups: [string, [string, string][]][] }> = {
+  vertex: { title: 'Vertex editing', groups: [
+    ['Move', [['tool.move', 'Move'], ['tool.rotate', 'Rotate'], ['tool.scale', 'Scale']]],
+    ['Join', [['mesh.merge', 'Merge'], ['mesh.weld', 'Weld'], ['mesh.collapse', 'Collapse'], ['mesh.connect', 'Connect'], ['mesh.makeFace', 'Make face'], ['mesh.dissolve', 'Dissolve']]],
+    ['Shape', [['mesh.smoothVerts', 'Relax'], ['loop.flatten', 'Flatten'], ['loop.circle', 'Circle'], ['loop.space', 'Space'], ['loop.curve', 'Curve'], ['mesh.extrudeHere', 'Extrude']]],
+    ['Fill', [['mesh.fill', 'Fill'], ['mesh.gridFill', 'Grid fill'], ['mesh.bridge', 'Bridge']]],
+    ['Select', [['select.linked', 'Linked'], ['select.grow', 'Grow'], ['select.shrink', 'Shrink'], ['select.shortestPath', 'Path'], ['select.boundary', 'Open edges'], ['select.invert', 'Invert']]],
+    ['Remove', [['edit.duplicate', 'Duplicate'], ['edit.delete', 'Delete']]],
+  ] },
+  edge: { title: 'Edge editing', groups: [
+    ['Move', [['tool.move', 'Move'], ['tool.rotate', 'Rotate'], ['tool.scale', 'Scale']]],
+    ['Cut and add', [['mesh.extrudeHere', 'Extrude'], ['mesh.bevel', 'Bevel'], ['tool.loopcut', 'Loop cut'], ['tool.knife', 'Knife'], ['mesh.bridge', 'Bridge'], ['mesh.spin', 'Spin']]],
+    ['Shape', [['loop.circle', 'Circle'], ['loop.space', 'Space'], ['loop.curve', 'Curve'], ['loop.flatten', 'Flatten'], ['mesh.merge', 'Merge'], ['mesh.dissolve', 'Dissolve']]],
+    ['Fill', [['mesh.fill', 'Fill'], ['mesh.gridFill', 'Grid fill'], ['mesh.makeFace', 'Make face']]],
+    ['Seams', [['uv.markSeam', 'Mark seam'], ['uv.clearSeam', 'Clear seam']]],
+    ['Select', [['select.loop', 'Loop'], ['select.ring', 'Ring'], ['select.boundary', 'Open edges'], ['select.shortestPath', 'Path'], ['select.grow', 'Grow'], ['select.linked', 'Linked']]],
+    ['Remove', [['edit.duplicate', 'Duplicate'], ['edit.delete', 'Delete']]],
+  ] },
+  face: { title: 'Face editing', groups: [
+    ['Move', [['tool.move', 'Move'], ['tool.rotate', 'Rotate'], ['tool.scale', 'Scale']]],
+    ['Add', [['mesh.extrudeHere', 'Extrude'], ['mesh.inset', 'Inset'], ['mesh.bevel', 'Bevel'], ['mesh.poke', 'Poke'], ['mesh.subdivide', 'Subdivide'], ['mesh.solidify', 'Solidify']]],
+    ['Change', [['mesh.dissolve', 'Dissolve'], ['mesh.triangulate', 'Triangulate'], ['mesh.quadify', 'To quads'], ['mesh.mirror', 'Mirror'], ['mesh.bridge', 'Bridge'], ['mesh.merge', 'Merge']]],
+    ['Facing', [['mesh.flip', 'Flip'], ['mesh.fixNormals', 'Outside']]],
+    ['Shading', [['mesh.smoothShade', 'Smooth'], ['mesh.flatShade', 'Flat'], ['mesh.autoSmooth', 'Auto']]],
+    ['Parts', [['mesh.detach', 'Detach'], ['mesh.regroup', 'Separate'], ['mesh.separateLoose', 'Loose parts'], ['edit.duplicate', 'Duplicate'], ['edit.delete', 'Delete']]],
+    ['Select', [['select.linked', 'Linked'], ['select.grow', 'Grow'], ['select.shrink', 'Shrink'], ['select.similarNormal', 'Coplanar'], ['select.ngons', 'N-gons'], ['select.tris', 'Triangles'], ['select.checker', 'Checker'], ['select.shortestPath', 'Path'], ['select.invert', 'Invert']]],
+  ] },
+  group: { title: 'Group editing', groups: [
+    ['Move', [['tool.move', 'Move'], ['tool.rotate', 'Rotate'], ['tool.scale', 'Scale']]],
+    ['Parts', [['edit.duplicate', 'Duplicate'], ['mesh.mergeGroups', 'Merge'], ['mesh.separateLoose', 'Loose parts'], ['mesh.mirror', 'Mirror'], ['edit.delete', 'Delete']]],
+    ['Place', [['mesh.centerOrigin', 'Centre'], ['mesh.ground', 'To ground'], ['mesh.rescale', 'Height…']]],
+    ['Shading', [['mesh.smoothShade', 'Smooth'], ['mesh.flatShade', 'Flat'], ['mesh.autoSmooth', 'Auto'], ['mesh.fixNormals', 'Outside']]],
+    ['Game', [['mesh.generateLods', 'LODs…'], ['mesh.collisionHull', 'Hull'], ['mesh.collisionBox', 'Box']]],
+    ['Select', [['select.all', 'All'], ['select.none', 'None'], ['select.invert', 'Invert']]],
+  ] },
+  bone: { title: 'Joint editing', groups: [
+    ['Build', [['tool.joint', 'Add joint'], ['rig.split', 'Insert'], ['rig.mirrorJoints', 'Mirror'], ['rig.humanoid', 'Humanoid'], ['edit.delete', 'Delete']]],
+    ['Pose', [['tool.move', 'Move'], ['tool.rotate', 'Rotate'], ['tool.ik', 'IK drag'], ['rig.testPose', 'Test pose'], ['rig.resetPose', 'Reset']]],
+    ['Skin', [['rig.autoWeightsAll', 'Weight all'], ['rig.autoWeights', 'Selected'], ['rig.assign', 'Assign'], ['rig.clear', 'Clear'], ['tool.paint', 'Paint'], ['rig.selectUnweighted', 'Unweighted']]],
+  ] },
+};
+
+/** The editing tools for the selection mode in use: everything that mode needs, as buttons, with their keys. */
+function modeToolsSection(): HTMLElement | null {
+  const spec = MODE_TOOLS[ed.mode];
+  if (!spec) return null;
+  const chip = ([id, label]: [string, string]) => {
+    const c = commands.get(id);
+    if (!c) return null;
+    const enabled = c.enabled ? c.enabled() : true;
+    const on = c.checked?.() ?? false;
+    const hint = c.hint && c.hint !== 'hidden' ? `\n${c.hint}` : '';
+    return h('button', {
+      class: `tool-chip${on ? ' active' : ''}`, disabled: !enabled, title: `${c.label.replace(/ Tool$/, '')}${c.key ? ` (${c.key})` : ''}${hint}`,
+      onclick: () => runCommand(id),
+      // The shortcut shows in the tooltip, not on the button.
+    }, h('span', null, label));
+  };
+  const n = ed.mode === 'bone' ? ed.selBones.size : ed.selectionCount();
+  const what = { vertex: 'vertex', edge: 'edge', face: 'face', group: 'face', bone: 'joint' }[ed.mode] ?? 'item';
+  return section(spec.title,
+    h('p', { class: 'muted small' }, n ? `${n.toLocaleString()} ${what}${n === 1 ? '' : what === 'vertex' ? 'es' : 's'} selected. Hover a button to see what it does.` : `Select ${what === 'vertex' ? 'vertices' : `${what}s`} in the view, then pick a tool. Hover a button to see what it does.`),
+    ...spec.groups.map(([heading, items]) => h('div', { class: 'tool-group' },
+      h('span', { class: 'tool-group-label' }, heading),
+      h('div', { class: 'tool-chips' }, items.map(chip)))),
+  );
+}
+
+/** The Face tool's settings, while it's in use. */
+function faceToolSection(): HTMLElement | null {
+  if (ed.tool !== 'face') return null;
+  const ft = app.vp.faceBuild;
+  const o = ft.opts;
+  const set = (change: Partial<typeof o>) => { Object.assign(o, change); refreshDock(); app.vp.invalidate(); };
+  const seg = <T extends string>(value: T, items: [T, string, string][], pick: (v: T) => void) => h('div', { class: 'seg' },
+    items.map(([v, label, title]) => h('button', { class: `seg-btn${value === v ? ' active' : ''}`, title, 'aria-pressed': String(value === v), onclick: () => pick(v) }, label)));
+  return section('Face tool',
+    h('div', { class: 'form-row' }, 'Shape', seg(o.shape, [
+      ['free', 'Free', 'As many corners as you like; Enter or a double-click makes the face'],
+      ['tri', 'Tri', 'Each face is made as soon as it has 3 corners'],
+      ['quad', 'Quad', 'Each face is made as soon as it has 4 corners'],
+    ], (v) => set({ shape: v }))),
+    h('div', { class: 'form-row' }, 'After a face', seg(o.after, [
+      ['finish', 'Finish', 'Stop, ready to start a new mesh or carry on from another edge'],
+      ['strip', 'Continue', 'Carry on from the last edge of the face, as a strip: with Quad, two clicks add each next quad'],
+    ], (v) => set({ after: v }))),
+    h('div', { class: 'form-row' }, 'Perspective plane', seg(ft.ground ? 'ground' : 'view', [
+      ['view', 'View', 'Points go on a plane through the last point, facing the view, so the mesh can climb and turn'],
+      ['ground', 'Ground', 'Points go on the level ground, at the height of the last point (N switches)'],
+    ], (v) => { ft.ground = v === 'ground'; refreshDock(); })),
+    h('div', { class: 'check-grid' },
+      checkbox('Land on surfaces', o.surfaces, (v) => set({ surfaces: v }), 'New points land on the model under the mouse, for drawing over a model. Alt skips it for one click'),
+      checkbox('Snap to vertices', o.snapVerts, (v) => set({ snapVerts: v }), 'Existing vertices and open edges snap, to join or carry on from them'),
+      checkbox('Double sided', o.doubleSided, (v) => set({ doubleSided: v }), 'The mesh shows from both sides: its material is set double-sided, and one is made if it has none'),
+      checkbox('Smooth', o.smooth, (v) => set({ smooth: v }), 'New faces shade smooth with the faces they join'),
+      checkbox('Mirror X', ed.mirrorX, () => runCommand('view.mirrorX'), 'Build each face on the other side of X as well, sharing points on the centre line'),
+    ),
+    h('div', { class: 'btn-row' },
+      button('Flip faces', () => ft.flipFaces(), { class: 'btn', title: 'Turn the selected faces (or the last one made) to face the other way. Backs show in red.' }),
+      button('Face outward', () => runCommand('mesh.fixNormals'), { class: 'btn', title: 'Face outward\nTurn every face of the selection (or the whole mesh) to face outward' }),
+    ),
+    h('p', { class: 'muted small' }, 'Enter or double-click finishes. Backspace or right click takes a point back. Click a vertex or open edge of any mesh to carry on from it; click in empty space for a new mesh.'),
+  );
+}
+
 function scenePanel() {
   const rows = groupRows();
   const selFaces = ed.selectedFaceSet().size;
   return [
+    faceToolSection(),
+    modeToolsSection(),
+    mirrorSection(),
     inspector(),
     section('Groups',
       rows.length ? h('div', { class: 'list' }, rows) : h('p', { class: 'muted' }, 'Add a primitive to create your first group.'),
@@ -1213,6 +1400,8 @@ const TABS: [string, string, () => any][] = [
 let bodyEl: HTMLElement;
 let tabsEl: HTMLElement;
 let scheduled = false;
+/** The tab drawn last: a different one is always drawn, even with a field in use. */
+let drawnTab = '';
 
 export function refreshDock() {
   if (scheduled) return;
@@ -1220,7 +1409,8 @@ export function refreshDock() {
   requestAnimationFrame(() => {
     scheduled = false;
     const t = TABS.find((x) => x[0] === panelState.tab) ?? TABS[0];
-    renderInto(bodyEl, () => t[2]());
+    renderInto(bodyEl, () => t[2](), drawnTab !== t[0]);
+    drawnTab = t[0];
     tabsEl.querySelectorAll('button').forEach((b) => {
       const on = (b as HTMLElement).dataset.tab === panelState.tab;
       if ((b as HTMLElement).dataset.tab === 'block') (b as HTMLElement).style.display = ed.workspace === 'block' ? '' : 'none';

@@ -18,6 +18,9 @@ import { evalPose, keyFrames, skinInto } from '../core/skeleton';
 import { uniqueName, type Bone, type Q, type RefImage, type V3 } from '../core/types';
 import { seamEdges } from '../core/uv';
 import { Pane, VIEW_LABELS, viewBasis, type ViewKind } from './pane';
+import { FaceTool } from './faceTool';
+import { InsetModal } from './insetTool';
+import { clipToMirror } from '../core/mirror';
 import * as pick from './picking';
 import { SceneGraph, type Shading } from './scene';
 import { h, ICONS, svgIcon } from '../ui/dom';
@@ -30,7 +33,7 @@ const GIZMO = 80; // pixels
 const VIEWPORT_KEY = 'thickshake.viewports';
 
 type Drag =
-  | { kind: 'orbit' | 'bank' | 'pan' | 'panGround' | 'panVertical' | 'zoom'; pane: Pane; x: number; y: number; pivot?: THREE.Vector3 }
+  | { kind: 'orbit' | 'bank' | 'pan' | 'panGround' | 'panVertical' | 'zoom'; pane: Pane; x: number; y: number; pivot?: THREE.Vector3; reverse?: boolean }
   | { kind: 'box'; pane: Pane; x0: number; y0: number; x1: number; y1: number; add: boolean; sub: boolean }
   | { kind: 'transform'; pane: Pane; handle: Handle; x0: number; y0: number; mode: 'move' | 'rotate' | 'scale'; center: THREE.Vector3; orig: Map<number, V3>; mirror: Map<number, number>; boneOrig?: Map<number, V3>; boneMirror?: Map<number, number>; poseBase?: PoseBase; startAngle?: number }
   | { kind: 'prim'; pane: Pane; s: PrimSession; x0: number; y0: number; made: boolean }
@@ -105,7 +108,19 @@ export class Viewports {
   private oneShotFrom: ToolId | null = null;
   private hover: Handle | null = null;
   private mouse = { x: 0, y: 0, inside: false };
-  private facePending: number[] = [];
+  /** The Face tool: building polygons point by point, in 3D. */
+  private insetModal = new InsetModal(() => this.invalidate());
+  private faceTool = new FaceTool({
+    scene: () => this.sg,
+    invalidate: () => this.invalidate(),
+    newGroup: () => {
+      const m = ed.model;
+      const g = { id: m.nextId++, name: uniqueName(m.groups.map((x) => x.name), 'Mesh'), material: ed.activeMaterial, visible: true, locked: false, kind: 'mesh' as const };
+      m.groups.push(g);
+      return g.id;
+    },
+    snap: (w) => this.snapV(w),
+  });
   private cssW = 0; private cssH = 0;
   private headers: HTMLElement;
   private splitters: HTMLElement[] = [];
@@ -139,7 +154,7 @@ export class Viewports {
     this.bindInput();
     ed.on(['selection', 'tool', 'time', 'anim', 'skeleton', 'view', 'geometry', 'topology'], () => this.invalidate());
     ed.on('tool', () => {
-      this.facePending = [];
+      this.faceTool.reset();
       this.updateCursor();
       if (this.session && ed.tool !== this.session.tool) this.dropPrim();
       if (ed.tool !== 'knife') { this.knife.reset(); this.knife.selectedOnly = false; } else this.knife.hint();
@@ -193,7 +208,7 @@ export class Viewports {
         this.ov.focus({ preventScroll: true });
         const { x, y } = this.local(e);
         this.active = p;
-        this.drag = { kind: kind === 'orbit' && p.isOrtho ? 'pan' : kind, pane: p, x, y };
+        this.drag = { kind: kind === 'orbit' && p.isOrtho ? 'pan' : kind, pane: p, x, y, reverse: p.upsideDown };
         this.invalidate();
       });
       return b;
@@ -467,6 +482,16 @@ export class Viewports {
   }
 
   /** T over a view: extrude the selection where the mouse is, following it. False if the mouse is elsewhere or nothing is selected. */
+  /** I over a view: inset the selected faces, as Blender does. */
+  startInsetHere(): boolean {
+    if (!this.mouse.inside || this.drag || this.modal || this.insetModal.active) return false;
+    const p = this.paneAt(this.mouse.x, this.mouse.y);
+    return p ? this.insetModal.start(p, this.mouse.x, this.mouse.y) : false;
+  }
+
+  /** Whether the mouse is over a view, so a key can start something where it points. */
+  get mouseInView(): boolean { return this.mouse.inside; }
+
   startExtrudeHere(): boolean {
     if (!this.mouse.inside) return false;
     const p = this.paneAt(this.mouse.x, this.mouse.y);
@@ -519,6 +544,40 @@ export class Viewports {
   }
 
   /** Switch the pane to a view, or to its partner if it's already showing that view. */
+  /**
+   * Blender's numpad: show a view in the pane under the mouse, or its opposite with Ctrl. Pressing a view again
+   * shows its opposite too.
+   */
+  numpadView(kind: Exclude<ViewKind, 'persp'>, opposite: Exclude<ViewKind, 'persp'>, ctrl: boolean) {
+    const p = this.keyPane();
+    const want = ctrl ? opposite : kind;
+    p.setKind(p.kind === want && !ctrl ? opposite : want);
+    this.joinLink(p);
+    this.syncHeaders();
+    this.invalidate();
+  }
+
+  /** Numpad 5: perspective, or back to the orthographic view the pane last showed. */
+  togglePerspective() {
+    const p = this.keyPane();
+    if (p.kind === 'persp') p.setKind(p.lastOrtho); else p.perspFromOrtho();
+    this.joinLink(p);
+    this.syncHeaders();
+    this.invalidate();
+  }
+
+  /**
+   * Numpad 2, 4, 6 and 8: orbit a step, 15 degrees, as Blender does; from a front, side or top view, into
+   * perspective first, looking the same way.
+   */
+  orbitStep(dYaw: number, dPitch: number) {
+    const p = this.keyPane();
+    if (p.isOrtho) p.perspFromOrtho();
+    p.turn(dYaw, dPitch);
+    this.syncHeaders();
+    this.invalidate();
+  }
+
   cycleView(first: ViewKind, second: ViewKind = first) {
     const p = this.keyPane();
     p.setKind(p.kind === first ? second : first);
@@ -724,19 +783,71 @@ export class Viewports {
   }
 
   private drawPending(g: CanvasRenderingContext2D, p: Pane) {
-    if (ed.tool !== 'face' || !this.facePending.length) return;
+    this.faceTool.draw(g, p);
+    this.drawPreHover(g, p);
+  }
+
+  /** What a click would select, under the mouse: a face (or group), an edge or a vertex, by selection mode. */
+  private preHover: { pane: Pane; kind: 'face'; faces: number[] } | { pane: Pane; kind: 'edge'; k: string } | { pane: Pane; kind: 'vertex'; v: number } | null = null;
+
+  private updatePreHover(p: Pane | null, x: number, y: number) {
+    const prev = this.preHover;
+    let next: typeof this.preHover = null;
+    const selecting = ed.tool === 'select' || ed.tool === 'move' || ed.tool === 'rotate' || ed.tool === 'scale';
+    if (p && selecting && this.mouse.inside && !this.hover) {
+      if (ed.mode === 'vertex') {
+        const v = pick.pickVertex(p, this.sg, x, y, 10);
+        if (v !== null) next = { pane: p, kind: 'vertex', v };
+      } else if (ed.mode === 'edge') {
+        const k = pick.pickEdge(p, this.sg, x, y, 8);
+        if (k) next = { pane: p, kind: 'edge', k };
+      } else if (ed.mode === 'face' || ed.mode === 'group') {
+        const hit = pick.pickFace(p, this.sg, x, y, true);
+        if (hit) {
+          const m = ed.model;
+          const g = m.faces[hit.face].g;
+          // A whole group lights up in Group mode, unless it's too big to draw quickly.
+          const all = ed.mode === 'group' ? m.faces.map((f, i) => (f.g === g ? i : -1)).filter((i) => i >= 0) : [hit.face];
+          next = { pane: p, kind: 'face', faces: all.length <= 4000 ? all : [hit.face] };
+        }
+      }
+    }
+    const same = JSON.stringify(prev && { ...prev, pane: undefined }) === JSON.stringify(next && { ...next, pane: undefined }) && prev?.pane === next?.pane;
+    if (!same) { this.preHover = next; this.invalidate(); }
+  }
+
+  private drawPreHover(g: CanvasRenderingContext2D, p: Pane) {
+    const h = this.preHover;
+    if (!h || h.pane !== p) return;
     const P = ed.displayPositions();
-    g.strokeStyle = SEL; g.fillStyle = SEL; g.lineWidth = 1.5;
-    g.beginPath();
-    this.facePending.forEach((v, i) => {
-      const s = p.project(P[v * 3], P[v * 3 + 1], P[v * 3 + 2]);
-      if (i) g.lineTo(s.x, s.y); else g.moveTo(s.x, s.y);
-    });
-    g.stroke();
-    this.facePending.forEach((v) => {
-      const s = p.project(P[v * 3], P[v * 3 + 1], P[v * 3 + 2]);
-      g.beginPath(); g.arc(s.x, s.y, 4, 0, 7); g.fill();
-    });
+    const at = (v: number) => p.project(P[v * 3], P[v * 3 + 1], P[v * 3 + 2]);
+    g.save();
+    if (h.kind === 'face') {
+      g.fillStyle = 'rgba(255,255,255,0.12)';
+      g.strokeStyle = 'rgba(255,255,255,0.7)';
+      g.lineWidth = 1.5;
+      g.beginPath();
+      for (const fi of h.faces) {
+        const f = ed.model.faces[fi];
+        if (!f) continue;
+        f.v.forEach((v, i) => { const s = at(v); if (i) g.lineTo(s.x, s.y); else g.moveTo(s.x, s.y); });
+        g.closePath();
+      }
+      g.fill();
+      g.stroke();
+    } else if (h.kind === 'edge') {
+      const [a, b] = h.k.split('_').map(Number);
+      const sa = at(a), sb = at(b);
+      g.strokeStyle = 'rgba(255,255,255,0.85)';
+      g.lineWidth = 3;
+      g.beginPath(); g.moveTo(sa.x, sa.y); g.lineTo(sb.x, sb.y); g.stroke();
+    } else {
+      const s = at(h.v);
+      g.strokeStyle = 'rgba(255,255,255,0.9)';
+      g.lineWidth = 2;
+      g.beginPath(); g.arc(s.x, s.y, 6, 0, Math.PI * 2); g.stroke();
+    }
+    g.restore();
   }
 
   // ---------- knife and loop cut ----------
@@ -756,10 +867,12 @@ export class Viewports {
   /** Keys for the Knife and Loop Cut, before the app's shortcuts. True if one was used. */
   toolKey(e: KeyboardEvent): boolean {
     if (this.modal) return this.modalKey(e);
+    if (this.insetModal.active) return this.insetModal.key(e);
     if (this.extrudeTool.active) return this.extrudeTool.key(e);
     // In the Paint and Tile workspaces their own keys come first: tools, colours, turning tiles.
     if (ed.tool === 'tile' && tileKey(e)) return true;
     if (ed.tool === 'texpaint' && app.paintKey(e)) return true;
+    if (ed.tool === 'face' && this.faceTool.key(e)) return true;
     if (ed.tool === 'pen' || (ed.tool === 'blob' && this.pen.active)) return this.pen.key(e);
     if (ed.tool === 'knife') {
       if (this.knife.key(e)) return true;
@@ -1335,19 +1448,20 @@ export class Viewports {
       this.invalidate();
 
       // Camera navigation
-      this.rightPress = e.button === 2 && (this.session || ed.tool === 'knife' || ed.tool === 'loopcut' || this.pen.active) ? { x, y } : null;
+      this.rightPress = e.button === 2 && (this.session || ed.tool === 'knife' || ed.tool === 'loopcut' || this.pen.active || (ed.tool === 'face' && this.faceTool.active)) ? { x, y } : null;
       // During a slide, a right click leaves the loop in the centre instead of moving the view.
       if (e.button === 2 && this.loopTool.sliding) { this.loopTool.cancelSlide(); return; }
       // A right click while extruding puts everything back, as in Blender.
       if (e.button === 2 && this.extrudeTool.active) { this.extrudeTool.cancel(); return; }
+      if (e.button === 2 && this.insetModal.active) { this.insetModal.cancel(); return; }
       if (e.button === 1) { this.drag = { kind: 'pan', pane: p, x, y }; return; }
       if (e.button === 2 && (this.drag?.kind === 'transform' || this.drag?.kind === 'ik' || this.drag?.kind === 'sculpt')) { this.cancelDrag(); return; }
       if (e.altKey && (e.button === 0 || e.button === 2)) {
         const kind = altDragKind(p, e);
-        this.drag = { kind, pane: p, x, y, pivot: kind === 'orbit' ? this.orbitPivot(p, x, y) : undefined };
+        this.drag = { kind, pane: p, x, y, pivot: kind === 'orbit' ? this.orbitPivot(p, x, y) : undefined, reverse: p.upsideDown };
         return;
       }
-      if (e.button === 2) { this.drag = p.isOrtho ? { kind: 'pan', pane: p, x, y } : { kind: 'orbit', pane: p, x, y, pivot: this.orbitPivot(p, x, y) }; return; }
+      if (e.button === 2) { this.drag = p.isOrtho ? { kind: 'pan', pane: p, x, y } : { kind: 'orbit', pane: p, x, y, pivot: this.orbitPivot(p, x, y), reverse: p.upsideDown }; return; }
       if (e.button !== 0) return;
       if (ed.refEdit && this.startRefDrag(p, x, y)) return;
       this.toolDown(p, x, y, e);
@@ -1365,6 +1479,8 @@ export class Viewports {
         if ((ed.tool === 'pen' || (ed.tool === 'blob' && this.pen.active)) && p) { this.pen.move(p, x, y, e); return; }
         if ((ed.tool === 'extrude' || this.extrudeTool.active) && p) { this.extrudeTool.move(p, x, y, e); return; }
         if (ed.tool === 'texpaint' && p) { this.texPaint.move(p, x, y); return; }
+        if (this.insetModal.active && p) { this.insetModal.move(p, x, y, e); return; }
+        if (ed.tool === 'face' && p) { this.faceTool.move(p, x, y, e); return; }
         if (ed.tool === 'tile' && p) { this.tileTool.move(p, x, y); return; }
         if (ed.tool === 'loopcut') {
           const at = p ?? this.active;
@@ -1373,11 +1489,12 @@ export class Viewports {
         }
         const hv = p ? this.hitGizmo(p, x, y) : null;
         if (JSON.stringify(hv) !== JSON.stringify(this.hover)) { this.hover = hv; this.invalidate(); }
+        this.updatePreHover(p, x, y);
         if (ed.tool === 'paint' || ed.tool === 'sculpt') this.invalidate();
         return;
       }
       switch (d.kind) {
-        case 'orbit': d.pane.orbit(x - d.x, y - d.y, d.pivot); d.x = x; d.y = y; break;
+        case 'orbit': d.pane.orbit(x - d.x, y - d.y, d.pivot, d.reverse); d.x = x; d.y = y; break;
         case 'pan': d.pane.pan(x - d.x, y - d.y); d.x = x; d.y = y; break;
         case 'bank': d.pane.bank(x - d.x); d.x = x; d.y = y; break;
         case 'panGround': d.pane.panGround(x - d.x, y - d.y); d.x = x; d.y = y; break;
@@ -1400,7 +1517,7 @@ export class Viewports {
       this.invalidate();
     });
 
-    ov.addEventListener('pointerleave', () => { this.mouse.inside = false; this.extrudeTool.clearHover(); this.invalidate(); });
+    ov.addEventListener('pointerleave', () => { this.mouse.inside = false; this.extrudeTool.clearHover(); this.preHover = null; this.invalidate(); });
 
     const finish = (e: PointerEvent) => {
       if (e.button === 0) { this.knife.up(); this.loopTool.up(); this.pen.up(); this.extrudeTool.up(); this.texPaint.up(); this.tileTool.up(); }
@@ -1413,6 +1530,7 @@ export class Viewports {
         if (ed.tool === 'knife') this.knife.rightClick();
         else if (ed.tool === 'loopcut') this.finishOneShot();
         else if (this.pen.active) this.pen.rightClick();
+        else if (ed.tool === 'face' && this.faceTool.active) this.faceTool.undoLast();
         else this.dropPrim();
       }
       this.rightPress = null;
@@ -1451,7 +1569,7 @@ export class Viewports {
         if (p) this.pen.dblclick(p, x, y);
         return;
       }
-      if (ed.tool === 'face' && this.facePending.length) { this.closeFace(); return; }
+      if (ed.tool === 'face' && this.faceTool.active) { this.faceTool.fill(true); return; }
       if (ed.tool !== 'select' || ed.mode !== 'edge') return;
       const { x, y } = this.local(e);
       const p = this.paneAt(x, y);
@@ -1493,6 +1611,9 @@ export class Viewports {
 
   // Tool dispatch on left press.
   private toolDown(p: Pane, x: number, y: number, e: PointerEvent) {
+    // An extrude begun with T from another tool, such as Face, takes the click that ends it.
+    if (this.extrudeTool.active) { this.extrudeTool.down(p, x, y, e); return; }
+    if (this.insetModal.active) { this.insetModal.confirm(); return; }
     const handle = this.hitGizmo(p, x, y);
     if (handle) { this.startTransform(p, handle, x, y); return; }
     const t = ed.tool;
@@ -1503,7 +1624,7 @@ export class Viewports {
       case 'texpaint': this.texPaint.down(p, x, y, e); return;
       case 'tile': this.tileTool.down(p, x, y, e); return;
       case 'vertex': this.placeVertex(p, x, y); return;
-      case 'face': this.faceClick(p, x, y); return;
+      case 'face': this.faceTool.down(p, x, y, e); return;
       case 'joint': this.placeJoint(p, x, y); return;
       case 'ik': this.startIK(p, x, y); return;
       case 'blob':
@@ -1567,7 +1688,7 @@ export class Viewports {
     } else if (mode === 'face' || mode === 'group') {
       let items: number[];
       if (isClick) {
-        const hit = pick.pickFace(p, this.sg, d.x0, d.y0, p.shading === 'wire');
+        const hit = pick.pickFace(p, this.sg, d.x0, d.y0, true);
         items = hit ? [hit.face] : [];
       } else items = pick.boxFaces(p, r);
       if (mode === 'group') {
@@ -1767,7 +1888,28 @@ export class Viewports {
       const mi = d.mirror.get(i);
       if (mi !== undefined) ed.model.verts[mi].p = [-n[0], n[1], n[2]];
     });
+    // A live mirror's Clipping keeps its points from crossing the mirror plane.
+    const clip = this.mirrorClipGroups(d.orig);
+    clip.forEach((vs, gid) => clipToMirror(ed.model, gid, vs, d.orig as Map<number, V3>));
     ed.emit('geometry');
+  }
+
+  /** The points being moved, by the mirrored groups with Clipping on that they belong to. */
+  private mirrorClipGroups(moving: Map<number, unknown>): Map<number, number[]> {
+    const m = ed.model;
+    const clipping = new Set(m.groups.filter((g) => g.mirror && g.mirror.on && g.mirror.clipping).map((g) => g.id));
+    const out = new Map<number, number[]>();
+    if (!clipping.size) return out;
+    const seen = new Set<string>();
+    for (const f of m.faces) {
+      if (!clipping.has(f.g)) continue;
+      for (const v of f.v) {
+        if (!moving.has(v) || seen.has(`${f.g}:${v}`)) continue;
+        seen.add(`${f.g}:${v}`);
+        (out.get(f.g) ?? out.set(f.g, []).get(f.g)!).push(v);
+      }
+    }
+    return out;
   }
 
   // ---------- creation ----------
@@ -1790,33 +1932,11 @@ export class Viewports {
     status(`Vertex ${ed.model.verts.length - 1}. Use the Face tool to connect vertices.`);
   }
 
-  private faceClick(p: Pane, x: number, y: number) {
-    let v = pick.pickVertex(p, this.sg, x, y, 12);
-    if (v === null) {
-      const w = p.planePoint(x, y, this.facePending.length
-        ? new THREE.Vector3(...ed.model.verts[this.facePending[0]].p) : new THREE.Vector3());
-      if (ed.snap) this.snapV(w);
-      ed.transact('Add vertex', (m) => { m.verts.push({ p: [w.x, w.y, w.z] }); });
-      v = ed.model.verts.length - 1;
-    }
-    if (this.facePending[0] === v && this.facePending.length >= 3) { this.closeFace(); return; }
-    if (!this.facePending.includes(v)) this.facePending.push(v);
-    status(`Face: ${this.facePending.length} corners. Enter or click the first corner to close, Esc to cancel.`);
-    this.invalidate();
-  }
-
-  closeFace() {
-    if (this.facePending.length < 3) { this.facePending = []; this.invalidate(); return; }
-    const corners = this.facePending.slice();
-    this.facePending = [];
-    ed.transact('Add face', (m) => {
-      const gid = this.ensureGroup();
-      m.faces.push({ v: corners, uv: corners.map((c) => [m.verts[c].p[0], m.verts[c].p[2]]), g: gid, s: 0 });
-    });
-    status('');
-  }
-  clearPending() { this.facePending = []; this.invalidate(); }
-  get pendingFace() { return this.facePending.length; }
+  closeFace() { this.faceTool.fill(true); }
+  /** The Face tool's settings, for the side panel. */
+  get faceBuild() { return this.faceTool; }
+  clearPending() { this.faceTool.reset(); }
+  get pendingFace() { return this.faceTool.count; }
 
   // ---------- drawing primitives ----------
   private newPrimSession(p: Pane, tool: string, x: number, y: number): PrimSession {
@@ -2469,7 +2589,13 @@ export class Viewports {
       for (let i = 0; i < P.length; i += 3) pts.push([P[i], P[i + 1], P[i + 2]]);
       ed.bonePose().forEach((bp) => pts.push(bp.pos));
     }
-    if (!pts.length) pts.push([0, 0, 0], [1, 1, 1]);
+    if (!pts.length) {
+      // Nothing to frame: centre every view on the origin, about six metres across, so the axes line up in all of
+      // them. (Framing a made-up box put its middle, not the origin, at the centre, zoomed right in.)
+      for (const p of this.panes) p.frame([0, 0, 0], 2.4);
+      this.invalidate();
+      return;
+    }
     const b = bounds(pts);
     const radius = Math.max(dist3(b.min, b.max) / 2, 0.1);
     for (const p of this.panes) p.frame(b.center, radius);

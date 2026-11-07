@@ -7,6 +7,7 @@ import { saveFile } from '../io/platform';
 import { exportOBJ, exportPLY, exportSTL } from '../io/simple';
 import { commands } from './commands';
 import { prepareRigForExport } from '../core/constraints';
+import { applyAllMirrors } from '../core/mirror';
 import { cloneModel, type Model } from '../core/types';
 import { button, checkbox, h, numField, select } from './dom';
 import { modal, reportError, toast } from './feedback';
@@ -148,7 +149,8 @@ export async function limitTextures(src: Model, max: number): Promise<Model> {
 }
 
 export async function doExport(format: Format, o: ExportOptions) {
-  const m = await limitTextures(ed.model, o.maxTexture ?? 0);
+  // Live mirrors become real geometry in the file.
+  const m = applyAllMirrors(await limitTextures(ed.model, o.maxTexture ?? 0));
   const stem = ed.fileName.replace(/\.[^.]+$/, '') || 'model';
   const filter = (name: string, ext: string) => [{ name, extensions: [ext] }];
   let res: { name: string } | null = null;
@@ -182,7 +184,7 @@ export function openShortcuts() {
       rows.map((c) => h('div', { class: 'keys-row' }, h('span', null, c.label), h('kbd', null, c.key!))));
   });
   const nav = h('div', { class: 'keys-col' }, h('h4', null, 'Mouse & navigation'),
-    [['Orbit', 'Right drag / Alt+Left'], ['Bank (perspective)', 'Alt+Right'], ['Pan', 'Middle drag / Alt in Top, Front, etc.'], ['Pan along ground (perspective)', 'Shift+Alt+Left'], ['Pan up or down (perspective)', 'Shift+Alt+Right'], ['Zoom', 'Wheel / Ctrl+Alt+Drag'], ['Pan a grid square', 'Arrows'], ['Pan 4 squares / a tenth', 'Shift / Alt+Arrows'], ['Back, Top, Right, Perspective', 'Numpad 1-4'], ['Maximize pane', 'Numpad 0'], ['Add to selection', 'Shift+Click'], ['Remove from selection', 'Ctrl+Drag'], ['Toggle snapping', 'Ctrl during a drag'], ['Finer value scrub', 'Shift while dragging a label']]
+    [['Orbit', 'Right drag / Alt+Left'], ['Bank (perspective)', 'Alt+Right'], ['Pan', 'Middle drag / Alt in Top, Front, etc.'], ['Pan along ground (perspective)', 'Shift+Alt+Left'], ['Pan up or down (perspective)', 'Shift+Alt+Right'], ['Zoom', 'Wheel / Ctrl+Alt+Drag'], ['Pan a grid square', 'Arrows'], ['Pan 4 squares / a tenth', 'Shift / Alt+Arrows'], ['Front, Right, Top (Ctrl: opposite)', 'Numpad 1, 3, 7'], ['Perspective / orthographic', 'Numpad 5'], ['Orbit 15°', 'Numpad 4, 6, 8, 2'], ['Other side', 'Numpad 9'], ['Frame selected', 'Numpad .'], ['Maximize pane', 'Numpad 0'], ['Add to selection', 'Shift+Click'], ['Remove from selection', 'Ctrl+Drag'], ['Toggle snapping', 'Ctrl during a drag'], ['Finer value scrub', 'Shift while dragging a label']]
       .map(([a, b]) => h('div', { class: 'keys-row' }, h('span', null, a), h('kbd', null, b))));
   void modal('Keyboard shortcuts', h('div', { class: 'keys' }, nav, cols), [{ label: 'Close', primary: true }], { width: 860 });
 }
@@ -194,5 +196,6 @@ export function openAbout() {
     h('p', null, 'A fast low-poly modeler, rigger and animator for game makers.'),
     h('p', { class: 'muted' }, 'An independent project, not affiliated with chUmbaLum sOft or the MilkShape 3D product. MS3D import and export exist so older work can move across.'),
     h('p', { class: 'muted' }, 'Rendering by Three.js (MIT).'),
+    h('p', { class: 'muted' }, 'Icons from PolyEcho (MIT), including Tabler Icons by Paweł Kuna (MIT).'),
   ), [{ label: 'Close', primary: true }], { width: 420 });
 }

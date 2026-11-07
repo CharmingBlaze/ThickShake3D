@@ -25,6 +25,9 @@ import { buildExportMesh, buildGltf, computeTangents, exportGLB } from '../src/i
 import { applyConstraints, bakeIKToFK, constraintWeight, keyWeight, prepareRigForExport, sampleLocals, snapTargetToFK } from '../src/core/constraints';
 import { bakeAO, bakeNormals, buildBvh, dilate, raycast, runToEnd, sampleSurface, type BakeMesh } from '../src/core/bake';
 import { packRects, remapIntoAtlas, type PackedRect } from '../src/core/atlas';
+import { bevelEdges, bridgeLoops, checkerFaces, extrudeEdges, insetRegion, circleLoops, connectVerts, dissolveEdges, dissolveFaces, dissolveVerts, edgeLoops, fitPlane, flattenVerts, gridFill, holeLoops, looseParts, pokeFaces, shortestFacePath, shortestPath, solidify, spaceLoops, spin, triFill } from '../src/core/meshtools';
+import { mergeInto } from '../src/io/importer';
+import { applyAllMirrors, clipToMirror, MIRROR_DEFAULTS, mirrorCopies } from '../src/core/mirror';
 import { exportMS3D, importMS3D } from '../src/io/ms3d';
 import { parseProject, serializeProject } from '../src/io/project';
 
@@ -2571,5 +2574,269 @@ describe('joint constraints', () => {
     const { json } = buildGltf(m, defaultExport);
     expect(json.animations[0].extras.events).toEqual([{ name: 'Grab', time: +(5 / 24).toFixed(6), frame: 5 }]);
     expect(json.nodes.some((n: { name: string }) => n.name === 'Hand IK')).toBe(false);
+  });
+});
+
+describe('mesh tools', () => {
+  /** Every edge used once each way: closed, with all faces turned the same way. */
+  const closedAndConsistent = (m: Model) => {
+    const dir = new Map<string, number>();
+    for (const f of m.faces) f.v.forEach((a, i) => { const k = `${a}>${f.v[(i + 1) % f.v.length]}`; dir.set(k, (dir.get(k) ?? 0) + 1); });
+    for (const [k, n] of dir) { if (n !== 1) return false; const [a, b] = k.split('>'); if (dir.get(`${b}>${a}`) !== 1) return false; }
+    return true;
+  };
+  const box = () => modelOf(prims.box(2, 2, 2));
+  const ringModel = (n: number, r: number, y: number, jitter = 0) => {
+    const m = emptyModel();
+    const vs: number[] = [];
+    for (let i = 0; i < n; i++) { const a = (i / n) * Math.PI * 2; vs.push(m.verts.length); m.verts.push({ p: [Math.cos(a) * r * (1 + (i % 2) * jitter), y + (i % 3) * jitter, Math.sin(a) * r] }); }
+    return { m, vs };
+  };
+
+  it('finds loops in a selection of edges', () => {
+    const loops = edgeLoops(['0_1', '1_2', '2_3', '3_0', '5_6', '6_7']);
+    expect(loops.find((l) => l.closed)!.verts.length).toBe(4);
+    expect(loops.find((l) => !l.closed)!.verts).toEqual([5, 6, 7]);
+    // A branch isn't a loop.
+    expect(edgeLoops(['0_1', '0_2', '0_3']).length).toBe(0);
+  });
+
+  it('makes a loop a circle, flattens and spaces points', () => {
+    const { m, vs } = ringModel(8, 1, 0, 0.2);
+    circleLoops(m, [{ verts: vs, closed: true }]);
+    const c = vs.reduce((s, v) => [s[0] + m.verts[v].p[0] / 8, s[1] + m.verts[v].p[1] / 8, s[2] + m.verts[v].p[2] / 8], [0, 0, 0]) as V3;
+    const r = vs.map((v) => dist(m.verts[v].p, c));
+    expect(Math.max(...r) - Math.min(...r)).toBeLessThan(1e-9);
+    // Evenly spaced round it.
+    const gaps = vs.map((v, i) => dist(m.verts[v].p, m.verts[vs[(i + 1) % 8]].p));
+    expect(Math.max(...gaps) - Math.min(...gaps)).toBeLessThan(1e-9);
+    const bumpy = ringModel(6, 1, 0, 0.3);
+    flattenVerts(bumpy.m, new Set(bumpy.vs));
+    const { normal, center } = fitPlane(bumpy.vs.map((v) => bumpy.m.verts[v].p));
+    for (const v of bumpy.vs) expect(Math.abs(dot(sub(bumpy.m.verts[v].p, center), normal))).toBeLessThan(1e-9);
+    // Space: points bunched along a line spread out evenly, ends kept.
+    const line = emptyModel();
+    [0, 0.1, 0.2, 3].forEach((x) => line.verts.push({ p: [x, 0, 0] }));
+    spaceLoops(line, [{ verts: [0, 1, 2, 3], closed: false }]);
+    expect(line.verts.map((v) => +v.p[0].toFixed(6))).toEqual([0, 1, 2, 3]);
+  });
+
+  it('bridges two loops into a closed surface, even with different counts', () => {
+    // Two opposite faces of a box, the sides gone: bridging their rims rebuilds the sides.
+    const m = box();
+    const n = m.faces.map((f) => faceNormal(m, f));
+    const keep = new Set(m.faces.map((_, i) => i).filter((i) => Math.abs(n[i][1]) > 0.9));
+    m.faces = m.faces.filter((_, i) => keep.has(i));
+    const loops = m.faces.map((f) => ({ verts: f.v.slice(), closed: true }));
+    bridgeLoops(m, loops, m.faces[0].g);
+    expect(m.faces.length).toBe(6);
+    expect(closedAndConsistent(m)).toBe(true);
+    // A 4-point loop and an 8-point loop still join all the way round.
+    const a = ringModel(4, 1, 0), b = ringModel(8, 1, 1);
+    const both = emptyModel();
+    both.verts.push(...a.m.verts, ...b.m.verts);
+    const g = makeGroup(both, 'G', null).id;
+    const made = bridgeLoops(both, [{ verts: [0, 1, 2, 3], closed: true }, { verts: [4, 5, 6, 7, 8, 9, 10, 11], closed: true }], g);
+    const used = new Set(made.flatMap((fi) => both.faces[fi].v));
+    expect(used.size).toBe(12);
+  });
+
+  it('fills holes with a grid of quads, or triangles', () => {
+    const m = box();
+    const top = m.faces.findIndex((f) => faceNormal(m, f)[1] > 0.9);
+    m.faces.splice(top, 1);
+    const holes = holeLoops(m, null);
+    expect(holes.length).toBe(1);
+    expect(gridFill(m, holes, m.faces[0].g)).toBe(1);
+    expect(m.faces.length).toBe(6);
+    expect(closedAndConsistent(m)).toBe(true);
+    // A 16-sided hole fills 4 × 4, smoothly inside its rim.
+    const tube = modelOf(prims.cylinder(1, 1, 2, 16));
+    const caps = tube.faces.map((f, i) => (f.v.length > 4 ? i : -1)).filter((i) => i >= 0);
+    tube.faces = tube.faces.filter((_, i) => !caps.includes(i));
+    const before = tube.faces.length;
+    gridFill(tube, holeLoops(tube, null), tube.faces[0].g);
+    expect(tube.faces.length - before).toBe(32);
+    expect(closedAndConsistent(tube)).toBe(true);
+    const t2 = box();
+    t2.faces.splice(0, 1);
+    triFill(t2, holeLoops(t2, null), t2.faces[0].g);
+    expect(t2.faces.length).toBe(7);
+    expect(closedAndConsistent(t2)).toBe(true);
+  });
+
+  it('dissolves faces, edges and vertices, keeping the surface', () => {
+    const grid = modelOf(prims.plane(2, 2, 2));
+    expect(grid.faces.length).toBe(4);
+    dissolveFaces(grid, new Set([0, 1, 2, 3]));
+    expect(grid.faces.length).toBe(1);
+    expect(grid.faces[0].v.length).toBe(8);
+    // A vertex in the middle of a 2 × 2 grid: its four faces become one, without it.
+    const g2 = modelOf(prims.plane(2, 2, 2));
+    const mid = g2.verts.findIndex((v) => Math.abs(v.p[0]) < 1e-9 && Math.abs(v.p[2]) < 1e-9);
+    dissolveVerts(g2, new Set([mid]));
+    expect(g2.faces.length).toBe(1);
+    // The middle point is gone (the rest are renumbered after it).
+    expect(g2.faces[0].v.length).toBe(8);
+    expect(g2.verts.some((v) => Math.abs(v.p[0]) < 1e-9 && Math.abs(v.p[2]) < 1e-9)).toBe(false);
+    // An edge of a box: the two faces beside it become one.
+    const b = box();
+    const f = b.faces[0];
+    dissolveEdges(b, new Set([edgeKey(f.v[0], f.v[1])]));
+    expect(b.faces.length).toBe(5);
+    expect(closedAndConsistent(b)).toBe(true);
+  });
+
+  it('connects, pokes, solidifies and spins', () => {
+    const q = modelOf(prims.plane(1, 1, 1));
+    const f = q.faces[0];
+    expect(connectVerts(q, new Set([f.v[0], f.v[2]]))).toBe(1);
+    expect(q.faces.map((x) => x.v.length)).toEqual([3, 3]);
+    const p = box();
+    pokeFaces(p, new Set([0]));
+    expect(p.faces.length).toBe(9);
+    expect(closedAndConsistent(p)).toBe(true);
+    const s = modelOf(prims.plane(1, 1, 1));
+    solidify(s, new Set([0]), 0.1);
+    expect(s.faces.length).toBe(6);
+    expect(closedAndConsistent(s)).toBe(true);
+    expect(Math.abs(signedVolume(s, s.faces.keys()))).toBeCloseTo(0.1, 6);
+    // One edge from (1, 0, 0) to (1, 1, 0), spun right round Y in 8 steps: a tube of 8 quads.
+    const sp = emptyModel();
+    sp.verts.push({ p: [1, 0, 0] }, { p: [1, 1, 0] });
+    const g = makeGroup(sp, 'Spin', null).id;
+    const made = spin(sp, [{ verts: [0, 1], closed: false }], g, [0, 1, 0], [0, 0, 0], 360, 8);
+    expect(made.length).toBe(8);
+    expect(sp.verts.length).toBe(16);
+  });
+
+  it('bevels edges into strips with corner faces', () => {
+    // Every edge of a box: 6 faces, 12 strips and 8 corner triangles, still closed.
+    const m = box();
+    const all = new Set<string>();
+    m.faces.forEach((f) => f.v.forEach((a, i) => all.add(edgeKey(a, f.v[(i + 1) % f.v.length]))));
+    const v0 = Math.abs(signedVolume(m, m.faces.keys()));
+    bevelEdges(m, all, 0.2);
+    expect(m.faces.length).toBe(26);
+    expect(m.faces.filter((f) => f.v.length === 3).length).toBe(8);
+    expect(closedAndConsistent(m)).toBe(true);
+    expect(Math.abs(signedVolume(m, m.faces.keys()))).toBeLessThan(v0);
+    // One edge: one strip, and the faces at its ends gain a corner each.
+    const one = box();
+    const f = one.faces[0];
+    bevelEdges(one, new Set([edgeKey(f.v[0], f.v[1])]), 0.2);
+    expect(one.faces.length).toBe(7);
+    expect(closedAndConsistent(one)).toBe(true);
+  });
+
+  it('splits loose parts, finds shortest paths and checkers a selection', () => {
+    const m = box();
+    const second = modelOf(prims.box(1, 1, 1));
+    mergeInto(m, second);
+    expect(looseParts(m, new Set(m.faces.map((_, i) => i))).length).toBe(2);
+    const g = modelOf(prims.plane(3, 3, 3));
+    const corner = (x: number, z: number) => g.verts.findIndex((v) => Math.abs(v.p[0] - x) < 1e-9 && Math.abs(v.p[2] - z) < 1e-9);
+    const path = shortestPath(g, corner(-1.5, -1.5), corner(1.5, -1.5));
+    expect(path.length).toBe(4);
+    expect(shortestFacePath(g, 0, 8).length).toBeGreaterThanOrEqual(5);
+    const kept = checkerFaces(g, new Set(g.faces.map((_, i) => i)));
+    expect(kept.size).toBe(5);
+  });
+});
+
+describe('extruding edges', () => {
+  it('pulls a box\'s open rim out into a closed-up strip of faces', () => {
+    const m = modelOf(prims.box(2, 2, 2));
+    const top = m.faces.findIndex((f) => faceNormal(m, f)[1] > 0.9);
+    const rim = m.faces[top].v.map((a, i, vs) => edgeKey(a, vs[(i + 1) % vs.length]));
+    m.faces.splice(top, 1);
+    const { verts, edges } = extrudeEdges(m, new Set(rim), m.faces[0].g);
+    expect(verts.length).toBe(4);
+    expect(edges.length).toBe(4);
+    expect(m.faces.length).toBe(9);
+    // Raise the copies: the walls go up and every face still runs the same way round.
+    for (const v of verts) m.verts[v].p[1] += 1;
+    const dir = new Map<string, number>();
+    for (const f of m.faces) f.v.forEach((a, i) => { const k = `${a}>${f.v[(i + 1) % f.v.length]}`; dir.set(k, (dir.get(k) ?? 0) + 1); });
+    expect([...dir.values()].every((n) => n === 1)).toBe(true);
+    expect(holeLoops(m, null).length).toBe(1);
+  });
+});
+
+describe('mirror modifier', () => {
+  const closedAndConsistent = (m: Model) => {
+    const dir = new Map<string, number>();
+    for (const f of m.faces) f.v.forEach((a, i) => { const k = `${a}>${f.v[(i + 1) % f.v.length]}`; dir.set(k, (dir.get(k) ?? 0) + 1); });
+    for (const [k, n] of dir) { if (n !== 1) return false; const [a, b] = k.split('>'); if (dir.get(`${b}>${a}`) !== 1) return false; }
+    return true;
+  };
+
+  it('bisects, mirrors and merges a box back into a closed whole', () => {
+    const m = modelOf(prims.box(2, 2, 2));
+    const g = m.groups[0];
+    g.mirror = { ...MIRROR_DEFAULTS, bisect: [true, false, false] };
+    const out = applyAllMirrors(m);
+    // The original keeps its modifier and its geometry.
+    expect(m.groups[0].mirror).toBeDefined();
+    expect(m.faces.length).toBe(6);
+    expect(out.groups[0].mirror).toBeUndefined();
+    // Five faces of the kept half (four cut in two, one whole), mirrored: ten, closed along the seam.
+    expect(out.faces.length).toBe(10);
+    expect(closedAndConsistent(out)).toBe(true);
+    expect(Math.abs(signedVolume(out, out.faces.keys()))).toBeCloseTo(8, 6);
+    // Flip keeps the other half instead.
+    m.groups[0].mirror = { ...MIRROR_DEFAULTS, bisect: [true, false, false], flip: [true, false, false] };
+    expect(closedAndConsistent(applyAllMirrors(m))).toBe(true);
+  });
+
+  it('mirrors across several axes, round a pivot, and keeps points from crossing', () => {
+    expect(mirrorCopies({ ...MIRROR_DEFAULTS, axis: [true, true, false] }).length).toBe(3);
+    const m = modelOf(prims.box(1, 1, 1));
+    m.bones.push({ id: 50, name: 'Pivot', parent: null, head: [2, 0, 0] });
+    m.groups[0].mirror = { ...MIRROR_DEFAULTS, pivot: { kind: 'joint', id: 50 }, merge: false };
+    const out = applyAllMirrors(m);
+    expect(out.faces.length).toBe(12);
+    expect(Math.max(...out.verts.map((v) => v.p[0]))).toBeCloseTo(4.5, 6);
+    // Clipping: a point on the plane stays on it, and one crossing stops at it.
+    const c = modelOf(prims.box(2, 2, 2));
+    c.groups[0].mirror = { ...MIRROR_DEFAULTS };
+    c.verts.push({ p: [0, 5, 0] }, { p: [0.5, 5, 0] });
+    const a = c.verts.length - 2, b = c.verts.length - 1;
+    const before = new Map([[a, [...c.verts[a].p] as V3], [b, [...c.verts[b].p] as V3]]);
+    c.verts[a].p[0] = 0.3; c.verts[b].p[0] = -0.2;
+    clipToMirror(c, c.groups[0].id, [a, b], before);
+    expect(c.verts[a].p[0]).toBe(0);
+    expect(c.verts[b].p[0]).toBe(0);
+  });
+});
+
+describe('inset like Blender', () => {
+  const opts = { thickness: 0.1, depth: 0, individual: false, even: true };
+  it('insets a face by a width, keeping the border even', () => {
+    const m = modelOf(prims.plane(1, 1, 1));
+    insetRegion(m, new Set([0]), opts);
+    expect(m.faces.length).toBe(5);
+    expect(faceArea(m, m.faces[0])).toBeCloseTo(0.64, 6);
+  });
+  it('insets a selection as one region, or each face on its own', () => {
+    const g = modelOf(prims.plane(2, 2, 2));
+    const mid = g.verts.findIndex((v) => Math.abs(v.p[0]) < 1e-9 && Math.abs(v.p[2]) < 1e-9);
+    insetRegion(g, new Set([0, 1, 2, 3]), opts);
+    expect(g.faces.length).toBe(12);
+    // The inside of the region stays where it was.
+    expect(g.verts[mid].p).toEqual([0, 0, 0]);
+    const each = modelOf(prims.plane(2, 2, 2));
+    insetRegion(each, new Set([0, 1, 2, 3]), { ...opts, individual: true });
+    expect(each.faces.length).toBe(20);
+  });
+  it('pushes the inset in with Depth and stays closed', () => {
+    const m = modelOf(prims.box(2, 2, 2));
+    const top = m.faces.findIndex((f) => faceNormal(m, f)[1] > 0.9);
+    const v0 = Math.abs(signedVolume(m, m.faces.keys()));
+    insetRegion(m, new Set([top]), { ...opts, thickness: 0.3, depth: -0.5 });
+    const dir = new Map<string, number>();
+    for (const f of m.faces) f.v.forEach((a, i) => { const k = `${a}>${f.v[(i + 1) % f.v.length]}`; dir.set(k, (dir.get(k) ?? 0) + 1); });
+    expect([...dir].every(([k, n]) => { const [a, b] = k.split('>'); return n === 1 && dir.get(`${b}>${a}`) === 1; })).toBe(true);
+    expect(Math.abs(signedVolume(m, m.faces.keys()))).toBeCloseTo(v0 - (0.5 / 3) * (4 + 1.96 + Math.sqrt(4 * 1.96)), 6);
   });
 });

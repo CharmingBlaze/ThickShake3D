@@ -5,6 +5,7 @@ import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment
 import { ed } from '../core/editor';
 import { parseEdge, triangulateFace } from '../core/geom';
 import { blockColorOf } from '../core/blockout';
+import { mirrorCopies, mirrorOf, mirrorPivot } from '../core/mirror';
 import { fillLit, fillUnlit, liveTextures, makeDocTexture, newLitMaterial, newUnlitMaterial, shaderSignature, type TexOf } from './materialView';
 
 /** A cached map is rebuilt when the texture is painted (rev) or switched to or from pixel art. */
@@ -25,6 +26,10 @@ const TRI = [0, 1, 2];
 interface GroupRender {
   id: number;
   mesh: THREE.Mesh;
+  /** The same faces seen from behind, in the back-face tint. */
+  back: THREE.Mesh;
+  /** A live mirror's copies, front and back, sharing the geometry, each mirrored by its own scale. */
+  mirrors: { mesh: THREE.Mesh; back: THREE.Mesh; scale: [number, number, number] }[];
   /** Vertex index per GPU corner. */
   corners: Int32Array;
   /** Per-corner source: face index, for picking. */
@@ -87,8 +92,8 @@ export class SceneGraph {
   selFill: THREE.Mesh;
   edgeMat = new THREE.LineBasicMaterial({ color: WIRE_DARK, transparent: true, opacity: 0.9 });
   selEdgeMat = new THREE.LineBasicMaterial({ color: SELECT_HEX });
-  pointMat = new THREE.PointsMaterial({ color: 0xdfe4ea, size: 4, sizeAttenuation: false });
-  selPointMat = new THREE.PointsMaterial({ color: SELECT_HEX, size: 6, sizeAttenuation: false });
+  pointMat = new THREE.PointsMaterial({ color: 0xdfe4ea, size: 5, sizeAttenuation: false });
+  selPointMat = new THREE.PointsMaterial({ color: SELECT_HEX, size: 7.5, sizeAttenuation: false });
   selFillMat = new THREE.MeshBasicMaterial({ color: SELECT_HEX, transparent: true, opacity: 0.32, side: THREE.DoubleSide, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
 
   // Shading override materials
@@ -103,6 +108,8 @@ export class SceneGraph {
   private shaderKeys = new Map<number, string>();
   private texCache = new Map<string, THREE.Texture>();
   private fallbackMat = new THREE.MeshStandardMaterial({ color: 0xb9bec6, roughness: 0.65, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 });
+  /** Backs of faces: a muted red, as Blender's face orientation shows them, so a face turned the wrong way stands out. */
+  private backMat = new THREE.MeshStandardMaterial({ color: 0xb04545, roughness: 0.9, side: THREE.BackSide, transparent: true, opacity: 0.42, depthWrite: false, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 });
 
   grids: Record<'xz' | 'xy' | 'zy', THREE.LineSegments>;
   envMap: THREE.Texture;
@@ -253,7 +260,10 @@ export class SceneGraph {
   // ---------- geometry ----------
   rebuild() {
     this.syncMaterials();
-    for (const r of this.groups.values()) { r.mesh.geometry.dispose(); this.meshRoot.remove(r.mesh); }
+    for (const r of this.groups.values()) {
+      r.mesh.geometry.dispose(); this.meshRoot.remove(r.mesh); this.meshRoot.remove(r.back);
+      for (const c of r.mirrors) { this.meshRoot.remove(c.mesh); this.meshRoot.remove(c.back); }
+    }
     this.groups.clear();
     const m = ed.model;
     const byGroup = new Map<number, number[]>();
@@ -317,7 +327,18 @@ export class SceneGraph {
       mesh.frustumCulled = false;
       mesh.visible = g.visible;
       this.meshRoot.add(mesh);
-      this.groups.set(g.id, { id: g.id, mesh, corners, cornerFace, faces, faceStart, faceVerts, faceVertSlot, cornerSlot, slotCount: slots });
+      const back = new THREE.Mesh(geo, this.backMat);
+      back.frustumCulled = false;
+      back.visible = false;
+      this.meshRoot.add(back);
+      // A live mirror shows as copies of the same geometry, mirrored by a scale of -1 round the pivot.
+      const mod = mirrorOf(m, g.id);
+      const mirrors = mod && mod.on ? mirrorCopies(mod).map((scale) => {
+        const cm = new THREE.Mesh(geo, this.fallbackMat), cb = new THREE.Mesh(geo, this.backMat);
+        for (const o of [cm, cb]) { o.frustumCulled = false; o.matrixAutoUpdate = false; this.meshRoot.add(o); }
+        return { mesh: cm, back: cb, scale };
+      }) : [];
+      this.groups.set(g.id, { id: g.id, mesh, back, mirrors, corners, cornerFace, faces, faceStart, faceVerts, faceVertSlot, cornerSlot, slotCount: slots });
     }
     this.weightsFor = undefined;
     this.updatePositions();
@@ -325,7 +346,25 @@ export class SceneGraph {
   }
 
   /** Recompute positions + smoothing-group normals from current display positions. */
+  /** Place each live mirror's copies round its pivot, which can move as the model is edited. */
+  private placeMirrors() {
+    const m = ed.model;
+    for (const r of this.groups.values()) {
+      if (!r.mirrors.length) continue;
+      const mod = mirrorOf(m, r.id);
+      if (!mod) continue;
+      const c = mirrorPivot(m, mod);
+      for (const k of r.mirrors) {
+        const mat = new THREE.Matrix4().makeTranslation(c[0], c[1], c[2])
+          .multiply(new THREE.Matrix4().makeScale(...k.scale))
+          .multiply(new THREE.Matrix4().makeTranslation(-c[0], -c[1], -c[2]));
+        for (const o of [k.mesh, k.back]) { o.matrix.copy(mat); o.matrixWorldNeedsUpdate = true; }
+      }
+    }
+  }
+
   updatePositions() {
+    this.placeMirrors();
     const P = ed.displayPositions();
     for (const r of this.groups.values()) {
       const { corners, faceStart, faceVerts, faceVertSlot, cornerSlot, mesh } = r;
@@ -588,7 +627,19 @@ export class SceneGraph {
           r.mesh.material = (g.material !== null ? (m.materials.find((x) => x.id === g.material)?.unlit ? this.unlit.get(g.material) : this.pbr.get(g.material)) : undefined) ?? this.fallbackMat;
           if (aux) r.mesh.visible = false;
       }
+      // Backs of faces in their tint, where the front material doesn't already show both sides.
+      const twoSided = shading === 'pbr' && g.material !== null && !!m.materials.find((x) => x.id === g.material)?.doubleSided;
+      r.back.visible = r.mesh.visible && ed.showBack && !twoSided && (shading === 'pbr' || shading === 'clay' || shading === 'checker' || shading === 'normals');
+      // A live mirror's copies look just like the mesh.
+      for (const k of r.mirrors) {
+        k.mesh.material = r.mesh.material;
+        k.mesh.visible = r.mesh.visible;
+        k.back.visible = r.back.visible;
+      }
     }
+    // Clay and the checker show both sides unless the backs have their own tint.
+    const side = ed.showBack ? THREE.FrontSide : THREE.DoubleSide;
+    for (const mat of [this.clayMat, this.checkerMat]) if (mat.side !== side) { mat.side = side; mat.needsUpdate = true; }
     const wire = shading === 'wire';
     this.edgeMat.color.setHex(wire ? WIRE_LIGHT : WIRE_DARK);
     this.edgeMat.opacity = wire ? 0.85 : 0.55;

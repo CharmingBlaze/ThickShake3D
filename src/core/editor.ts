@@ -57,6 +57,8 @@ export class Editor {
   snapAngle = 15;
   mirrorX = false;
   xray = false;
+  /** Draw the backs of faces in a tint of their own, so faces pointing the wrong way show. */
+  showBack = true;
   showBones = true;
   showBoneNames = false;
   showGrid = true;

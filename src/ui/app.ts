@@ -11,6 +11,8 @@ export const app = {
   setWorkspace: (_w: Workspace) => {},
   showTab: (_t: string) => {},
   toggleTimeline: () => {},
+  /** Whether the timeline is showing, for its menu tick. */
+  timelineShown: () => false as boolean,
   uvRefresh: () => {},
   /** Redraw the Paint and Tile panels after their settings change. */
   paintRefresh: () => {},

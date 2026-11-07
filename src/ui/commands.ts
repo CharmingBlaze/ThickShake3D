@@ -9,6 +9,7 @@ import { decimate } from '../core/decimate';
 import { ed, type SelMode, type ToolId, type Workspace } from '../core/editor';
 import { bounds, edgeFaces, edgeKey, faceNormal, parseEdge } from '../core/geom';
 import * as ops from '../core/ops';
+import * as mt from '../core/meshtools';
 import * as prims from '../core/primitives';
 import { buildSample } from '../core/sample';
 import { addHumanoid, autoWeights, ensureTrack, heatWeights, keyFrames, mirrorJoints, mirrorWeights, pruneWeights, removeJoints, sampleTrack, setKey, smoothWeights, splitJoint, weightIssues } from '../core/skeleton';
@@ -23,6 +24,7 @@ import { modal, reportError, status, toast } from './feedback';
 import { h } from './dom';
 import { openAbout, openExportDialog, openShortcuts } from './dialogs';
 import { openPalette } from './palette';
+import { glyph } from './glyphs';
 import { openKeymapEditor } from './keymap';
 import { makeAtlas, openBakeDialog } from './gameTools';
 
@@ -273,27 +275,27 @@ for (const [m, l, k] of MODES) def(`mode.${m}`, `${l} Mode`, () => ed.setMode(m)
 // ---------- tools ----------
 const DRAW_HINT = 'Drag out the shape in a view, then drag in another view for depth. Ctrl makes it symmetrical. Double-click to finish.';
 export const TOOLS: { id: ToolId; label: string; key?: string; icon: string; group: string; hint: string }[] = [
-  { id: 'select', label: 'Select', key: 'Q', group: 'edit', hint: 'Click or drag a box. Shift adds, Ctrl removes. Double-click an edge for its loop.', icon: '<path d="M6 3l12 9-5.5 1.2L15.5 20l-2.6 1.2-3-6.8L6 18z"/>' },
-  { id: 'move', label: 'Move', key: 'W', group: 'edit', hint: 'Drag an arrow, plane or the centre square. Ctrl toggles snapping.', icon: '<path d="M12 3v18M3 12h18M12 3l-3 3M12 3l3 3M12 21l-3-3M12 21l3-3M3 12l3-3M3 12l3 3M21 12l-3-3M21 12l-3 3"/>' },
-  { id: 'rotate', label: 'Rotate', key: 'E', group: 'edit', hint: 'Drag a ring, or the outer circle to spin around the view. Ctrl toggles angle snapping.', icon: '<path d="M20 12a8 8 0 1 1-2.6-5.9"/><path d="M20 3v5h-5"/>' },
-  { id: 'scale', label: 'Scale', group: 'edit', hint: 'Drag a handle for one axis, or the centre square for uniform scale.', icon: '<rect x="4" y="11" width="9" height="9" rx="1"/><path d="M13 11l7-7M15 4h5v5"/>' },
-  { id: 'extrude', label: 'Extrude', key: 'T', group: 'model', hint: 'Drag any face to pull it out or push it in, or click it and move. T over a view extrudes the selection and follows the mouse. Type a distance; double-click repeats the last one.', icon: '<path d="M4 15l8-4 8 4-8 4z"/><path d="M12 11V3M9 6l3-3 3 3"/>' },
-  { id: 'loopcut', label: 'Loop Cut', key: 'Ctrl+R', group: 'model', hint: 'Hover an edge to see the loop. Wheel or Page Up/Down changes the number of cuts. Click to place, move to slide, click again to confirm. Right click or Esc leaves it centred.', icon: '<rect x="4" y="5" width="16" height="14" rx="1"/><path d="M12 3v18" stroke-dasharray="2.5 2.5"/>' },
-  { id: 'knife', label: 'Knife', key: 'K', group: 'model', hint: 'Click to cut across faces, or drag to draw. Enter or Space confirms, Esc cancels, E new cut, double-click closes, Ctrl midpoints, Shift no snap, A angle, C cut through, X Y Z axis, S measure.', icon: '<path d="M4 20L15.5 3.5c2.5 2 4 5 3.5 8.5l-7.5 2z"/><path d="M4 20l7.5-6"/>' },
-  { id: 'vertex', label: 'Vertex', group: 'model', hint: 'Click in a view to place a vertex.', icon: '<circle cx="12" cy="12" r="3.2" fill="currentColor"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3"/>' },
-  { id: 'face', label: 'Face', group: 'model', hint: 'Click existing or new corners in order, then Enter or click the first corner to close.', icon: '<path d="M5 18L12 5l7 13z"/><circle cx="5" cy="18" r="1.4" fill="currentColor"/><circle cx="12" cy="5" r="1.4" fill="currentColor"/><circle cx="19" cy="18" r="1.4" fill="currentColor"/>' },
-  { id: 'box', label: 'Box', group: 'create', hint: DRAW_HINT, icon: '<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5M12 12v9"/>' },
-  { id: 'sphere', label: 'Sphere', group: 'create', hint: DRAW_HINT, icon: '<circle cx="12" cy="12" r="8.5"/><ellipse cx="12" cy="12" rx="8.5" ry="3.2"/><ellipse cx="12" cy="12" rx="3.2" ry="8.5"/>' },
-  { id: 'geosphere', label: 'GeoSphere', group: 'create', hint: DRAW_HINT, icon: '<path d="M12 3l7.8 4.5v9L12 21l-7.8-4.5v-9z"/><path d="M12 3l-3.5 7L4.2 7.5M12 3l3.5 7 4.3-2.5M8.5 10h7L12 16.5zM8.5 10l-4.3 6.5M15.5 10l4.3 6.5M12 16.5V21"/>' },
-  { id: 'cylinder', label: 'Cylinder', group: 'create', hint: DRAW_HINT, icon: '<ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v12c0 1.7 3.1 3 7 3s7-1.3 7-3V6"/>' },
-  { id: 'cone', label: 'Cone', group: 'create', hint: DRAW_HINT, icon: '<path d="M12 3L5 18c0 1.7 3.1 3 7 3s7-1.3 7-3z"/>' },
+  { id: 'select', label: 'Select', key: 'Q', group: 'edit', hint: 'Click or drag a box. Shift adds, Ctrl removes. Double-click an edge for its loop.', icon: glyph('cursor-select') },
+  { id: 'move', label: 'Move', key: 'W', group: 'edit', hint: 'Drag an arrow, plane or the centre square. Ctrl toggles snapping.', icon: glyph('tool-move') },
+  { id: 'rotate', label: 'Rotate', group: 'edit', hint: 'Drag a ring, or the outer circle to spin around the view. Ctrl toggles angle snapping.', icon: glyph('tool-rotate') },
+  { id: 'scale', label: 'Scale', group: 'edit', hint: 'Drag a handle for one axis, or the centre square for uniform scale.', icon: glyph('tool-scale') },
+  { id: 'extrude', label: 'Extrude', key: 'T', group: 'model', hint: 'Drag any face to pull it out or push it in, or click it and move. T over a view extrudes the selection and follows the mouse. Type a distance; double-click repeats the last one.', icon: glyph('tool-extrude') },
+  { id: 'loopcut', label: 'Loop Cut', key: 'Ctrl+R', group: 'model', hint: 'Hover an edge to see the loop. Wheel or Page Up/Down changes the number of cuts. Click to place, move to slide, click again to confirm. Right click or Esc leaves it centred.', icon: glyph('tool-loopcut') },
+  { id: 'knife', label: 'Knife', key: 'K', group: 'model', hint: 'Click to cut across faces, or drag to draw. Enter or Space confirms, Esc cancels, E new cut, double-click closes, Ctrl midpoints, Shift no snap, A angle, C cut through, X Y Z axis, S measure.', icon: glyph('tool-knife') },
+  { id: 'vertex', label: 'Vertex', group: 'model', hint: 'Click in a view to place a vertex.', icon: glyph('vertex-select') },
+  { id: 'face', label: 'Face', group: 'model', hint: 'Build faces point by point in 3D: points land on the model under the mouse or on a plane through the last point. Click a vertex to use it, or an open edge to build from it. Enter or a double-click makes the face and finishes, so the next click starts a new mesh or carries on from any vertex or open edge; clicking the first point makes it and carries on beside it. Backspace or right click takes a point back, Esc stops, N ground plane, Alt draws freely.', icon: glyph('fill-face') },
+  { id: 'box', label: 'Box', group: 'create', hint: DRAW_HINT, icon: glyph('mesh-cube') },
+  { id: 'sphere', label: 'Sphere', group: 'create', hint: DRAW_HINT, icon: glyph('mesh-sphere') },
+  { id: 'geosphere', label: 'GeoSphere', group: 'create', hint: DRAW_HINT, icon: glyph('mesh-icosphere') },
+  { id: 'cylinder', label: 'Cylinder', group: 'create', hint: DRAW_HINT, icon: glyph('mesh-cylinder') },
+  { id: 'cone', label: 'Cone', group: 'create', hint: DRAW_HINT, icon: glyph('mesh-cone') },
   { id: 'pyramid', label: 'Pyramid', group: 'create', hint: DRAW_HINT, icon: '<path d="M12 3L3 17l7 4 11-5z"/><path d="M12 3l-2 18M12 3l9 13"/>' },
-  { id: 'plane', label: 'Plane', group: 'create', hint: DRAW_HINT, icon: '<path d="M3 16l6-8h12l-6 8z"/><path d="M9 16l3-8M6 12h12"/>' },
+  { id: 'plane', label: 'Plane', group: 'create', hint: DRAW_HINT, icon: glyph('mesh-plane') },
   { id: 'limb', label: 'Limb', group: 'block', hint: 'Drag from one end of a limb to the other: shoulder to elbow, hip to knee. Starting on a piece attaches it there.', icon: '<path d="M6 18L18 6" stroke-width="5" stroke-linecap="round"/><circle cx="6" cy="18" r="1" fill="currentColor"/>' },
   { id: 'part', label: 'Part', group: 'block', hint: 'Drag from one end of a character part to the other.', icon: '<path d="M12 3c-4 0-7 3-7 7.5 0 5 3.5 10.5 7 10.5s7-5.5 7-10.5C19 6 16 3 12 3z"/>' },
   { id: 'stroke', label: 'Tube', group: 'block', hint: 'Draw a line, freehand, and it becomes a rounded tube: tentacles, tails, hair, vines. Ctrl+wheel sets the thickness.', icon: '<path d="M4 19c4 0 3-7 7-7s4 5 9-7" stroke-width="3" stroke-linecap="round"/>' },
-  { id: 'blob', label: 'Draw Shape', group: 'block', hint: 'Draw around any outline and it inflates into a rounded solid: a torso, a hand, a leaf, a rock.', icon: '<path d="M5 13c-2-5 3-9 8-8s8 5 6 10-7 6-10 4-3-3-4-6z" stroke-dasharray="3 2.5"/>' },
-  { id: 'pen', label: 'Pen Shape', group: 'block', hint: 'Draw an outline with curves, the way a vector pen does: click for a corner, drag for a curve, click the first point to close. Reshape it, then press Enter to inflate it into a rounded piece: a head, a hand, a body.', icon: '<path d="M4 20c1-6 3-9 8-11"/><path d="M12 9l3-6 6 6-6 3z"/><circle cx="4" cy="20" r="1.4" fill="currentColor"/><circle cx="15" cy="9" r="1.2" fill="currentColor"/>' },
+  { id: 'blob', label: 'Draw Shape', group: 'block', hint: 'Draw around any outline and it inflates into a rounded solid: a torso, a hand, a leaf, a rock.', icon: glyph('tool-shape-draw') },
+  { id: 'pen', label: 'Pen Shape', group: 'block', hint: 'Draw an outline with curves, the way a vector pen does: click for a corner, drag for a curve, click the first point to close. Reshape it, then press Enter to inflate it into a rounded piece: a head, a hand, a body.', icon: glyph('tool-poly-draw') },
   { id: 'lathe', label: 'Lathe', group: 'block', hint: 'Draw half an outline, top to bottom, and it spins into a solid around the centre line: a torso, a head, a vase, a bottle.', icon: '<path d="M12 3v18" stroke-dasharray="2 2.5"/><path d="M12 4c5 0 7 3 5 7s2 5 1 7-3 2-6 2"/><path d="M12 4c-5 0-7 3-5 7s-2 5-1 7 3 2 6 2" opacity=".35"/>' },
   { id: 'sculpt', label: 'Sculpt', key: 'C', group: 'model', hint: 'Push the surface around with a soft brush: Grab, Inflate, Smooth, Flatten or Pinch. Shift reverses, Ctrl smooths, Ctrl+wheel resizes.', icon: '<path d="M15 3l6 6-9 9-7 3 3-7z"/><path d="M12 6l6 6"/>' },
   { id: 'capsule', label: 'Capsule', group: 'block', hint: DRAW_HINT, icon: '<rect x="7" y="3" width="10" height="18" rx="5"/><path d="M7 9c2 1.5 8 1.5 10 0M7 15c2 1.5 8 1.5 10 0"/>' },
@@ -301,13 +303,15 @@ export const TOOLS: { id: ToolId; label: string; key?: string; icon: string; gro
   { id: 'wedge', label: 'Wedge', group: 'block', hint: DRAW_HINT, icon: '<path d="M3 19h18L3 7z"/>' },
   { id: 'stairs', label: 'Stairs', group: 'block', hint: `${DRAW_HINT} Arrow keys change the step count.`, icon: '<path d="M3 20h18V5h-5v5h-5v5H6v5"/>' },
   { id: 'doorway', label: 'Doorway', group: 'block', hint: DRAW_HINT, icon: '<path d="M3 20V5h18v15h-6v-9H9v9z"/>' },
-  { id: 'torus', label: 'Torus', group: 'create', hint: DRAW_HINT, icon: '<ellipse cx="12" cy="12" rx="9" ry="6"/><ellipse cx="12" cy="11.5" rx="3.6" ry="1.8"/>' },
-  { id: 'joint', label: 'Joint', key: 'J', group: 'rig', hint: 'Click to add a joint chained from the active joint. Esc clears the parent.', icon: '<circle cx="6" cy="18" r="2.4"/><circle cx="18" cy="6" r="2.4"/><path d="M8 16L16 8"/>' },
-  { id: 'ik', label: 'IK Drag', key: 'Y', group: 'rig', hint: 'Pose by pulling a joint: a hand or foot, and the limb follows. Joints sets how far up the chain bends.', icon: '<path d="M5 20l5-7 5 3 4-11"/><circle cx="5" cy="20" r="1.6"/><circle cx="10" cy="13" r="1.6"/><circle cx="15" cy="16" r="1.6"/><circle cx="19" cy="5" r="2.2" fill="currentColor"/>' },
-  { id: 'paint', label: 'Weight Paint', key: 'B', group: 'rig', hint: 'Paint the active joint\'s influence. Shift subtracts. Ctrl+wheel resizes the brush.', icon: '<path d="M14 4l6 6-9 9c-1.5 1.5-4 1.5-5.5 0S4 15 5.5 13.5z"/><path d="M11 7l6 6"/>' },
+  { id: 'torus', label: 'Torus', group: 'create', hint: DRAW_HINT, icon: glyph('mesh-torus') },
+  { id: 'joint', label: 'Joint', key: 'J', group: 'rig', hint: 'Click to add a joint chained from the active joint. Esc clears the parent.', icon: glyph('bone') },
+  { id: 'ik', label: 'IK Drag', key: 'Y', group: 'rig', hint: 'Pose by pulling a joint: a hand or foot, and the limb follows. Joints sets how far up the chain bends.', icon: glyph('ik') },
+  { id: 'paint', label: 'Weight Paint', key: 'B', group: 'rig', hint: 'Paint the active joint\'s influence. Shift subtracts. Ctrl+wheel resizes the brush.', icon: glyph('paint') },
 ];
 for (const t of TOOLS) {
   def(`tool.${t.id}`, `${t.label} Tool`, () => {
+    // T while building faces extrudes the selection and stays in the Face tool.
+    if (t.id === 'extrude' && ed.tool === 'face' && ed.selectedFaceSet().size && app.vp.startExtrudeHere()) return;
     setTool(t.id);
     // As in Blender: T over a view, with faces selected, extrudes them straight away and they follow the mouse.
     if (t.id === 'extrude') app.vp.startExtrudeHere();
@@ -370,17 +374,113 @@ const MODAL_HELP = 'X Y Z lock an axis (Shift for the other two), type a number 
 def('edit.moveHere', 'Move Selection', () => { app.vp.startModalHere('move'); }, { key: 'G', hint: `Move the selection with the mouse. ${MODAL_HELP}` });
 def('edit.rotateHere', 'Rotate Selection', () => { app.vp.startModalHere('rotate'); }, { key: 'R', hint: `Turn the selection by circling the mouse around it. Typed numbers are degrees. ${MODAL_HELP}` });
 def('edit.scaleHere', 'Scale Selection', () => { app.vp.startModalHere('scale'); }, { key: 'S', hint: `Scale the selection by moving the mouse away from it or toward it. ${MODAL_HELP}` });
-def('mesh.extrude', 'Extrude Faces', () => { setTool('extrude'); app.vp.startExtrudeHere(); }, { enabled: notPose });
+/** A starting distance for an extrude from a menu or the panel: a quarter of the selection's size. */
+function extrudeStep(verts: Iterable<number>): number {
+  const m = ed.model;
+  const size = bounds([...verts].map((v) => m.verts[v].p)).size;
+  const d = Math.max(...size) * 0.25;
+  return d > 1e-6 ? +d.toFixed(3) : 0.25;
+}
+
+/** Extrude the selected faces by a set distance, which stays adjustable in the last-operation panel. */
+function extrudeFacesOp(faces: Set<number>) {
+  const sel = new Set(faces);
+  const mode = ed.mode === 'group' ? 'group' : 'face';
+  ed.runOp('Extrude', [
+    { key: 'distance', label: 'Distance', type: 'number', value: extrudeStep([...sel].flatMap((fi) => ed.model.faces[fi].v)), min: -100, max: 100, step: 0.01 },
+    { key: 'along', label: 'Along vertex normals', type: 'bool', value: false },
+  ], (m, v) => {
+    const { top, normal, vertexNormals } = ops.extrudeFaces(m, sel);
+    for (const i of top) {
+      const n = v.along ? vertexNormals.get(i) ?? normal : normal;
+      const p = m.verts[i].p;
+      m.verts[i].p = [p[0] + n[0] * v.distance, p[1] + n[1] * v.distance, p[2] + n[2] * v.distance];
+    }
+    ed.mode = mode;
+    ed.selFaces = new Set(sel);
+  });
+}
+
+/** Extrude the selected edges by a set distance, out along the faces beside them. */
+function extrudeEdgesOp(edges: Set<string>) {
+  const sel = new Set(edges);
+  const m0 = ed.model;
+  // The way out: along the faces next to the edges, away from their middle, so an open rim grows outward.
+  const ef = edgeFaces(m0);
+  const dir = new THREE.Vector3();
+  for (const k of sel) {
+    const [a, b] = parseEdge(k);
+    const mid = new THREE.Vector3(...m0.verts[a].p).add(new THREE.Vector3(...m0.verts[b].p)).multiplyScalar(0.5);
+    for (const fi of ef.get(k) ?? []) {
+      const f = m0.faces[fi];
+      const c = new THREE.Vector3();
+      f.v.forEach((v) => c.add(new THREE.Vector3(...m0.verts[v].p)));
+      c.divideScalar(f.v.length);
+      dir.add(mid.clone().sub(c).normalize());
+    }
+  }
+  if (dir.lengthSq() < 1e-9) dir.set(0, 1, 0);
+  dir.normalize();
+  const verts = [...sel].flatMap((k) => parseEdge(k));
+  const edgeMode = ed.mode === 'edge';
+  ed.runOp('Extrude edges', [
+    { key: 'distance', label: 'Distance', type: 'number', value: extrudeStep(verts), min: -100, max: 100, step: 0.01 },
+    { key: 'x', label: 'Direction X', type: 'number', value: +dir.x.toFixed(3), min: -1, max: 1, step: 0.05 },
+    { key: 'y', label: 'Direction Y', type: 'number', value: +dir.y.toFixed(3), min: -1, max: 1, step: 0.05 },
+    { key: 'z', label: 'Direction Z', type: 'number', value: +dir.z.toFixed(3), min: -1, max: 1, step: 0.05 },
+  ], (m, v) => {
+    const made = mt.extrudeEdges(m, sel, activeGroupId(m));
+    const d = new THREE.Vector3(v.x, v.y, v.z);
+    if (d.lengthSq() < 1e-9) d.set(0, 1, 0);
+    d.normalize().multiplyScalar(v.distance);
+    for (const i of made.verts) { const p = m.verts[i].p; m.verts[i].p = [p[0] + d.x, p[1] + d.y, p[2] + d.z]; }
+    ed.clearSelection();
+    if (edgeMode) { ed.mode = 'edge'; made.edges.forEach((k) => ed.selEdges.add(k)); } else { ed.mode = 'vertex'; made.verts.forEach((i) => ed.selVerts.add(i)); }
+  });
+}
+
+def('mesh.extrude', 'Extrude Faces', () => {
+  setTool('extrude');
+  const faces = ed.selectedFaceSet();
+  if (faces.size && !app.vp.mouseInView) extrudeFacesOp(faces);
+  else app.vp.startExtrudeHere();
+}, { enabled: notPose });
+def('mesh.extrudeHere', 'Extrude Selection', () => {
+  // As Blender's E: faces push out along their normal, following the mouse; edges pull out into new faces and move
+  // with the mouse. The tool in use stays. From a menu or the panel, a set distance, adjustable after.
+  const faces = ed.selectedFaceSet();
+  if (faces.size) { if (!app.vp.mouseInView) extrudeFacesOp(faces); else app.vp.startExtrudeHere(); return; }
+  const edges = ed.mode === 'edge' ? new Set(ed.selEdges) : mt.edgesAmong(ed.model, ed.selectedVertexSet());
+  if (!need(edges.size > 0, 'Select faces or edges to extrude.')) return;
+  if (!app.vp.mouseInView) { extrudeEdgesOp(edges); return; }
+  let made: { verts: number[]; edges: string[] } = { verts: [], edges: [] };
+  ed.transact('Extrude edges', (m) => { made = mt.extrudeEdges(m, edges, activeGroupId(m)); });
+  ed.clearSelection();
+  if (ed.mode === 'edge') made.edges.forEach((k) => ed.selEdges.add(k)); else { ed.setMode('vertex'); made.verts.forEach((v) => ed.selVerts.add(v)); }
+  ed.emit('selection');
+  app.vp.startModalHere('move');
+}, { key: 'E', enabled: notPose, hint: 'Extrude the selection and move it with the mouse, as Blender does: faces along their normal, edges into new faces. X, Y or Z locks an axis; click keeps it, Esc or right click leaves it in place.' });
 
 def('mesh.inset', 'Inset Faces', () => {
   const faces = ed.selectedFaceSet();
   if (!need(faces.size > 0, 'Select faces to inset.')) return;
-  ed.runOp('Inset', [{ key: 'amount', label: 'Amount', type: 'number', value: 0.2, min: 0.01, max: 0.95, step: 0.01 }], (m, v) => {
-    ops.insetFaces(m, faces, v.amount);
+  // Over a view, as Blender's I: the mouse sets the width. From a menu or the panel: a set width, adjustable after.
+  if (app.vp.startInsetHere()) return;
+  const m0 = ed.model;
+  const pts = [...faces].flatMap((fi) => m0.faces[fi].v.map((v) => m0.verts[v].p));
+  const size = bounds(pts).size;
+  const width = +(Math.max(0.001, Math.min(...size.filter((x) => x > 1e-6), Infinity) * 0.15)).toFixed(3);
+  ed.runOp('Inset', [
+    { key: 'thickness', label: 'Thickness', type: 'number', value: Number.isFinite(width) ? width : 0.05, min: 0, max: 100, step: 0.005 },
+    { key: 'depth', label: 'Depth', type: 'number', value: 0, min: -100, max: 100, step: 0.005 },
+    { key: 'individual', label: 'Individual', type: 'bool', value: false },
+    { key: 'even', label: 'Even offset', type: 'bool', value: true },
+  ], (m, v) => {
+    mt.insetRegion(m, faces, { thickness: v.thickness, depth: v.depth, individual: v.individual, even: v.even });
     ed.mode = 'face';
     ed.selFaces = new Set(faces);
   });
-}, { key: 'I', enabled: notPose });
+}, { key: 'I', enabled: notPose, hint: 'Inset the selected faces as one region, as Blender does: move the mouse toward their middle to widen the border. Ctrl+mouse: depth. I: each face on its own. E: even width. Type a width. Click keeps it.' });
 
 def('mesh.subdivide', 'Subdivide (Smooth)', () => {
   const start = ed.selectedFaceSet(true);
@@ -431,6 +531,29 @@ def('mesh.weld', 'Weld Selected', () => {
     status(`Welded ${n} vertices`);
   });
 }, { key: 'Ctrl+M', enabled: notPose });
+def('mesh.merge', 'Merge', () => {
+  // As Blender's M: in Group mode, the selected groups become one; otherwise the selected points do.
+  if (ed.mode === 'group') { runCommand('mesh.mergeGroups'); return; }
+  // In the order they were picked, for At First and At Last.
+  const vs = ed.mode === 'vertex' ? [...ed.selVerts] : [...ed.selectedVertexSet()];
+  if (!need(vs.length > 1, 'Select 2 or more vertices to merge, or switch to Group mode (4) to merge groups.')) return;
+  ed.runOp('Merge', [
+    { key: 'at', label: 'Merge', type: 'choice', value: 'center', options: [['center', 'At centre'], ['first', 'At first'], ['last', 'At last'], ['distance', 'By distance']] },
+    { key: 'distance', label: 'Distance', type: 'number', value: 0.001, min: 0, max: 100, step: 0.001 },
+  ], (m, v) => {
+    if (v.at === 'distance') {
+      const n = ops.weld(m, new Set(vs), v.distance);
+      status(n ? `Merged ${n} vertex${n === 1 ? '' : 'es'} within ${v.distance}.` : `No vertices within ${v.distance} of each other. Raise Distance.`);
+    } else {
+      const pts = vs.map((i) => m.verts[i].p);
+      const target: V3 = v.at === 'first' ? [...pts[0]] as V3 : v.at === 'last' ? [...pts[pts.length - 1]] as V3
+        : [pts.reduce((s, p) => s + p[0], 0) / pts.length, pts.reduce((s, p) => s + p[1], 0) / pts.length, pts.reduce((s, p) => s + p[2], 0) / pts.length];
+      for (const i of vs) m.verts[i].p = [...target] as V3;
+      ops.collapse(m, new Set(vs));
+    }
+    ed.clearSelection();
+  });
+}, { key: 'M', enabled: notPose, hint: 'Merge the selected vertices into one (at their centre, the first or last picked, or those close together), or in Group mode the selected groups' });
 def('mesh.collapse', 'Collapse to Point', () => {
   const vs = ed.selectedVertexSet();
   if (!need(vs.size > 1, 'Select 2 or more vertices to collapse.')) return;
@@ -492,8 +615,13 @@ def('mesh.regroup', 'Separate to New Group', () => {
   });
 }, { key: 'Ctrl+G', enabled: notPose });
 def('mesh.mergeGroups', 'Merge Selected Groups', () => {
+  // Every group the selection touches, in any mode: whole faces, or any point or edge of one.
   const ids = new Set([...ed.selectedFaceSet()].map((i) => ed.model.faces[i].g));
-  if (!need(ids.size > 1, 'Select faces from 2 or more groups.')) return;
+  if (ed.mode === 'vertex' || ed.mode === 'edge') {
+    const vs = ed.selectedVertexSet();
+    ed.model.faces.forEach((f) => { if (f.v.some((v) => vs.has(v))) ids.add(f.g); });
+  }
+  if (!need(ids.size > 1, 'Select two or more groups to merge: Shift-click them in the Groups list, or select part of each in the view.')) return;
   ed.transact('Merge groups', (m) => {
     const [first, ...rest] = [...ids];
     const r = new Set(rest);
@@ -502,6 +630,195 @@ def('mesh.mergeGroups', 'Merge Selected Groups', () => {
     ed.activeGroup = first;
   });
 }, { enabled: notPose });
+// ---------- more mesh tools (Blender and LoopTools) ----------
+/** Edges a loop tool works on: the selected edges, the edges among selected points, or the rim of selected faces. */
+function selectionEdges(): Set<string> {
+  const m = ed.model;
+  if (ed.mode === 'edge') return new Set(ed.selEdges);
+  if (ed.mode === 'vertex') return mt.edgesAmong(m, ed.selectedVertexSet());
+  // Faces: their outline, the edges only one selected face uses.
+  const faces = ed.selectedFaceSet();
+  const count = new Map<string, number>();
+  for (const fi of faces) { const f = m.faces[fi]; f.v.forEach((a, i) => { const k = edgeKey(a, f.v[(i + 1) % f.v.length]); count.set(k, (count.get(k) ?? 0) + 1); }); }
+  return new Set([...count].filter(([, n]) => n === 1).map(([k]) => k));
+}
+const selectionLoops = () => mt.edgeLoops(selectionEdges());
+const activeGroupId = (m: Model) => ed.activeGroup ?? m.faces[[...ed.selectedFaceSet(true)][0] ?? 0]?.g ?? m.groups[0]?.id ?? 0;
+const influence = { key: 'influence', label: 'Influence', type: 'number' as const, value: 1, min: 0, max: 1, step: 0.05 };
+
+def('loop.circle', 'Circle', () => {
+  const loops = selectionLoops().filter((l) => l.closed);
+  if (!need(loops.length > 0, 'Select a closed loop of edges, or faces whose rim makes one.')) return;
+  ed.runOp('Circle', [{ key: 'regular', label: 'Even spacing', type: 'bool', value: true }, influence], (m, v) => { mt.circleLoops(m, loops, v.regular, v.influence); });
+}, { enabled: notPose, hint: 'Make each selected loop a circle in its own plane (LoopTools)' });
+def('loop.flatten', 'Flatten', () => {
+  const vs = ed.selectedVertexSet();
+  if (!need(vs.size >= 3, 'Select 3 or more vertices to flatten.')) return;
+  ed.runOp('Flatten', [influence], (m, v) => mt.flattenVerts(m, vs, v.influence));
+}, { enabled: notPose, hint: 'Move the selected points onto the plane that fits them best (LoopTools)' });
+def('loop.space', 'Space Evenly', () => {
+  const loops = selectionLoops();
+  if (!need(loops.length > 0, 'Select a loop or a line of edges.')) return;
+  ed.runOp('Space', [influence], (m, v) => { mt.spaceLoops(m, loops, v.influence); });
+}, { enabled: notPose, hint: 'Spread the points of each selected loop evenly along it (LoopTools)' });
+def('loop.curve', 'Curve', () => {
+  const loops = selectionLoops().filter((l) => !l.closed);
+  if (!need(loops.length > 0, 'Select an open line of edges to curve.')) return;
+  ed.runOp('Curve', [influence], (m, v) => { mt.curveLoops(m, loops, v.influence); });
+}, { enabled: notPose, hint: 'Smooth a line of edges into an even curve, keeping its ends (LoopTools)' });
+def('mesh.bridge', 'Bridge Edge Loops', () => {
+  const m0 = ed.model;
+  const faceMode = ed.mode === 'face' || ed.mode === 'group';
+  const faces = faceMode ? ed.selectedFaceSet() : new Set<number>();
+  const loops = selectionLoops();
+  if (!need(loops.length >= 2, faceMode ? 'Select two faces or patches to bridge between.' : 'Select two or more loops of edges to bridge.')) return;
+  // Remember the loops by position, since removing faces renumbers vertices.
+  const keys = loops.map((l) => ({ closed: l.closed, pts: l.verts.map((v) => m0.verts[v].p.join(',')) }));
+  ed.runOp('Bridge', [
+    { key: 'segments', label: 'Segments', type: 'number', value: 1, min: 1, max: 32, step: 1 },
+    { key: 'twist', label: 'Twist', type: 'number', value: 0, min: -64, max: 64, step: 1 },
+  ], (m, v) => {
+    const g = activeGroupId(m);
+    if (faces.size) ops.removeFaces(m, faces, false);
+    const at = new Map(m.verts.map((x, i) => [x.p.join(','), i]));
+    const found = keys.map((k) => ({ closed: k.closed, verts: k.pts.map((p) => at.get(p)!) })).filter((l) => l.verts.every((x) => x !== undefined));
+    mt.bridgeLoops(m, found, g, Math.round(v.segments), Math.round(v.twist));
+  });
+}, { enabled: notPose, hint: 'Join loops of edges with faces; in face mode, join two faces and open a tube between them' });
+def('mesh.gridFill', 'Grid Fill', () => {
+  const holes = mt.holeLoops(ed.model, ed.selectedVertexSet());
+  if (!need(holes.length > 0, 'Select the edge of a hole to fill it.')) return;
+  if (!need(holes.some((l) => l.length % 2 === 0 && l.length >= 4), 'Grid Fill needs a hole with an even number of edges. Use Fill for others.')) return;
+  ed.runOp('Grid Fill', [
+    { key: 'span', label: 'Span', type: 'number', value: 0, min: 0, max: 64, step: 1 },
+    { key: 'offset', label: 'Offset', type: 'number', value: 0, min: -64, max: 64, step: 1 },
+  ], (m, v) => { mt.gridFill(m, mt.holeLoops(m, new Set(holes.flat())), activeGroupId(m), Math.round(v.span), Math.round(v.offset)); });
+}, { enabled: notPose, hint: 'Fill a hole with a grid of quads that follows its rim. Span sets how many across (0 picks); Offset turns where the grid starts' });
+def('mesh.fill', 'Fill', () => {
+  const holes = mt.holeLoops(ed.model, ed.selectedVertexSet());
+  if (!need(holes.length > 0, 'Select the edge of a hole to fill it.')) return;
+  ed.runOp('Fill', [], (m) => { mt.triFill(m, mt.holeLoops(m, new Set(holes.flat())), activeGroupId(m)); });
+}, { enabled: notPose, hint: 'Close a hole with triangles' });
+def('mesh.bevel', 'Bevel', () => {
+  const m0 = ed.model;
+  let edges: Set<string>;
+  if (ed.mode === 'edge') edges = new Set(ed.selEdges);
+  else if (ed.mode === 'vertex') edges = mt.edgesAmong(m0, ed.selectedVertexSet());
+  else { edges = new Set(); for (const fi of ed.selectedFaceSet()) { const f = m0.faces[fi]; f.v.forEach((a, i) => edges.add(edgeKey(a, f.v[(i + 1) % f.v.length]))); } }
+  if (!need(edges.size > 0, 'Select edges to bevel.')) return;
+  const P = [...edges].flatMap((k) => parseEdge(k)).map((v) => m0.verts[v].p);
+  const size = bounds(P).size;
+  const width = +(Math.max(0.001, Math.min(size[0] || Infinity, size[1] || Infinity, size[2] || Infinity, Math.max(...size)) * 0.1)).toFixed(3);
+  ed.runOp('Bevel', [{ key: 'width', label: 'Width', type: 'number', value: width, min: 0.0001, max: 100, step: 0.005 }], (m, v) => {
+    mt.bevelEdges(m, edges, v.width);
+    ed.clearSelection();
+  });
+}, { key: 'Ctrl+B', enabled: notPose, hint: 'Cut the selected edges back into flat strips, with a face at each corner' });
+def('mesh.dissolve', 'Dissolve', () => {
+  const m0 = ed.model;
+  if (ed.mode === 'vertex') {
+    const vs = ed.selectedVertexSet();
+    if (!need(vs.size > 0, 'Select vertices to dissolve.')) return;
+    ed.runOp('Dissolve vertices', [], (m) => { mt.dissolveVerts(m, vs); ed.clearSelection(); });
+  } else if (ed.mode === 'edge') {
+    const es = new Set(ed.selEdges);
+    if (!need(es.size > 0, 'Select edges to dissolve.')) return;
+    ed.runOp('Dissolve edges', [], (m) => { mt.dissolveEdges(m, es); ed.clearSelection(); });
+  } else {
+    const fs = ed.selectedFaceSet();
+    if (!need(fs.size > 1, 'Select two or more joined faces to dissolve into one.')) return;
+    ed.runOp('Dissolve faces', [], (m) => { mt.dissolveFaces(m, fs); ed.clearSelection(); });
+  }
+  void m0;
+}, { enabled: notPose, hint: 'Remove the selection but keep the surface: points and edges go, and the faces around them join into one' });
+def('mesh.connect', 'Connect Vertices', () => {
+  const vs = ed.selectedVertexSet();
+  if (!need(vs.size >= 2, 'Select two or more vertices on the same faces.')) return;
+  ed.runOp('Connect', [], (m) => { if (!mt.connectVerts(m, vs)) toast('No face has two of those vertices apart from each other.', 'info'); });
+}, { enabled: notPose, hint: 'Split faces with an edge between selected vertices that share them' });
+def('mesh.poke', 'Poke Faces', () => {
+  const fs = ed.selectedFaceSet();
+  if (!need(fs.size > 0, 'Select faces to poke.')) return;
+  ed.runOp('Poke', [{ key: 'offset', label: 'Offset', type: 'number', value: 0, min: -100, max: 100, step: 0.01 }], (m, v) => { mt.pokeFaces(m, fs, v.offset); });
+}, { enabled: notPose, hint: 'Fan triangles from a new point in the middle of each face' });
+def('mesh.solidify', 'Solidify', () => {
+  const fs = ed.selectedFaceSet(true);
+  if (!need(fs.size > 0, 'Select faces to give thickness.')) return;
+  ed.runOp('Solidify', [{ key: 'thickness', label: 'Thickness', type: 'number', value: 0.05, min: -100, max: 100, step: 0.005 }], (m, v) => { mt.solidify(m, fs, v.thickness); });
+}, { enabled: notPose, hint: 'Give a surface thickness: a back copy joined round the open edges' });
+def('mesh.spin', 'Spin', () => {
+  const loops = selectionLoops();
+  if (!need(loops.length > 0, 'Select a profile of edges to spin.')) return;
+  const vs = new Set(loops.flatMap((l) => l.verts));
+  const m0 = ed.model;
+  const centre = bounds([...vs].map((v) => m0.verts[v].p)).center;
+  ed.runOp('Spin', [
+    { key: 'angle', label: 'Angle', type: 'number', value: 360, min: -360, max: 360, step: 5 },
+    { key: 'steps', label: 'Steps', type: 'number', value: 12, min: 2, max: 128, step: 1 },
+    { key: 'axis', label: 'Axis', type: 'choice', value: 1, options: [[0, 'X'], [1, 'Y'], [2, 'Z']] },
+    { key: 'about', label: 'Around', type: 'choice', value: 'origin', options: [['origin', 'The origin'], ['selection', 'The selection']] },
+  ], (m, v) => {
+    const axis: V3 = [0, 0, 0]; axis[Number(v.axis)] = 1;
+    mt.spin(m, loops, activeGroupId(m), axis, v.about === 'origin' ? [0, 0, 0] : centre, v.angle, Math.round(v.steps));
+  });
+}, { enabled: notPose, hint: 'Sweep a profile of edges round an axis, like a lathe' });
+def('mesh.separateLoose', 'Separate Loose Parts', () => {
+  const fs = ed.selectedFaceSet(true);
+  ed.transact('Separate loose parts', (m) => {
+    // Within each group, every loose part after the first gets a group of its own.
+    const byGroup = new Map<number, Set<number>>();
+    for (const fi of fs) (byGroup.get(m.faces[fi].g) ?? byGroup.set(m.faces[fi].g, new Set()).get(m.faces[fi].g)!).add(fi);
+    let made = 0;
+    byGroup.forEach((faces, gid) => {
+      const parts = mt.looseParts(m, faces);
+      const name = m.groups.find((g) => g.id === gid)?.name ?? 'Part';
+      for (const part of parts.slice(1)) { ops.regroup(m, new Set(part), name); made++; }
+    });
+    toast(made ? `Split into ${made} more group${made === 1 ? '' : 's'}.` : 'Nothing loose to separate.', made ? 'ok' : 'info');
+  });
+}, { enabled: notPose, hint: 'Give each separate piece its own group' });
+
+// Selection helpers.
+def('select.shortestPath', 'Select Shortest Path', () => {
+  const m = ed.model;
+  if (ed.mode === 'vertex') {
+    const sel = [...ed.selVerts];
+    if (!need(sel.length === 2, 'Select exactly two vertices.')) return;
+    const path = mt.shortestPath(m, sel[0], sel[1]);
+    if (!need(path.length > 0, 'Those vertices aren\'t joined.')) return;
+    ed.selVerts = new Set(path);
+  } else if (ed.mode === 'edge') {
+    const sel = [...ed.selEdges].map(parseEdge);
+    if (!need(sel.length === 2, 'Select exactly two edges.')) return;
+    const path = mt.shortestPath(m, sel[0][1], sel[1][0]);
+    if (!need(path.length > 0, 'Those edges aren\'t joined.')) return;
+    path.forEach((v, i) => { if (i) ed.selEdges.add(edgeKey(path[i - 1], v)); });
+  } else {
+    const sel = [...ed.selFaces];
+    if (!need(sel.length === 2, 'Select exactly two faces.')) return;
+    const path = mt.shortestFacePath(m, sel[0], sel[1]);
+    if (!need(path.length > 0, 'Those faces aren\'t joined.')) return;
+    ed.selFaces = new Set(path);
+  }
+  ed.emit('selection');
+}, { hint: 'Select along the shortest way between two selected vertices, edges or faces' });
+const selectFacesWhere = (test: (n: number) => boolean, what: string) => {
+  ed.setMode('face');
+  const m = ed.model;
+  ed.selFaces = new Set(m.faces.map((f, i) => (test(f.v.length) && !ed.isFaceHidden(i) ? i : -1)).filter((i) => i >= 0));
+  ed.emit('selection');
+  status(`${ed.selFaces.size.toLocaleString()} ${what}.`);
+};
+def('select.ngons', 'Select N-gons', () => selectFacesWhere((n) => n > 4, 'faces with more than 4 sides'), { hint: 'Faces with more than four corners, which some engines and tools handle badly' });
+def('select.tris', 'Select Triangles', () => selectFacesWhere((n) => n === 3, 'triangles'));
+def('select.checker', 'Checker Deselect', () => {
+  const fs = ed.selectedFaceSet();
+  if (!need(fs.size > 1, 'Select some faces first.')) return;
+  ed.setMode('face');
+  ed.selFaces = mt.checkerFaces(ed.model, fs);
+  ed.emit('selection');
+}, { hint: 'Keep every other face of the selection' });
+
 def('mesh.makeFace', 'Make Face from Vertices', () => {
   const vs = [...ed.selectedVertexSet()];
   if (!need(vs.length >= 3, 'Select 3 or more vertices.')) return;
@@ -674,12 +991,13 @@ const toggle = (id: string, label: string, get: () => boolean, set: (v: boolean)
   def(id, label, () => { set(!get()); ed.emit('view', 'tool'); }, { key, checked: get });
 toggle('view.xray', 'X-Ray', () => ed.xray, (v) => { ed.xray = v; }, 'Alt+X');
 toggle('view.wire', 'Wireframe on Shaded', () => ed.showWire, (v) => { ed.showWire = v; }, 'Alt+W');
+toggle('view.backFaces', 'Show Back Faces', () => ed.showBack, (v) => { ed.showBack = v; });
 toggle('view.grid', 'Show Grid', () => ed.showGrid, (v) => { ed.showGrid = v; });
 toggle('view.bones', 'Show Joints', () => ed.showBones, (v) => { ed.showBones = v; });
 toggle('view.boneNames', 'Show Joint Names', () => ed.showBoneNames, (v) => { ed.showBoneNames = v; });
 toggle('view.snap', 'Snap to Grid', () => ed.snap, (v) => { ed.snap = v; }, 'Shift+S');
 toggle('view.mirrorX', 'Mirror Edits Across X', () => ed.mirrorX, (v) => { ed.mirrorX = v; }, 'Shift+X');
-def('view.timeline', 'Show Timeline', () => app.toggleTimeline(), { key: 'Ctrl+T' });
+def('view.timeline', 'Show Timeline', () => app.toggleTimeline(), { key: 'Ctrl+T', checked: () => app.timelineShown() });
 if (native) {
   def('view.fullscreen', 'Toggle Fullscreen', () => { void native!.toggleFullscreen(); }, { key: 'F11' });
   def('view.devtools', 'Developer Tools', () => { void native!.toggleDevtools(); });
@@ -1430,14 +1748,28 @@ function comboOf(e: KeyboardEvent): string {
 }
 
 const ARROWS: Record<string, [number, number]> = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, 1], ArrowDown: [0, -1] };
-const NUMPAD_VIEWS: Record<string, [ViewKind, ViewKind]> = { Numpad1: ['back', 'front'], Numpad2: ['top', 'bottom'], Numpad3: ['right', 'left'], Numpad4: ['persp', 'persp'] };
 
 /** LightWave's numeric keypad views and arrow key panning. Returns true if it used the key. */
 function navKey(e: KeyboardEvent): boolean {
-  if (/^Numpad\d$/.test(e.code)) {
-    if (e.ctrlKey || e.altKey || e.shiftKey) return false;
-    if (e.code === 'Numpad0') app.vp.toggleMax();
-    else if (NUMPAD_VIEWS[e.code]) app.vp.cycleView(...NUMPAD_VIEWS[e.code]);
+  // The numpad works as in Blender.
+  if (/^Numpad(\d|Decimal)$/.test(e.code)) {
+    if (e.altKey || e.shiftKey) return false;
+    const step = (15 * Math.PI) / 180;
+    switch (e.code) {
+      case 'Numpad1': app.vp.numpadView('front', 'back', e.ctrlKey); break;
+      case 'Numpad3': app.vp.numpadView('right', 'left', e.ctrlKey); break;
+      case 'Numpad7': app.vp.numpadView('top', 'bottom', e.ctrlKey); break;
+      case 'Numpad5': app.vp.togglePerspective(); break;
+      // Orbit a step: 4 and 6 turn, 8 and 2 tilt; 9 swings round to the other side.
+      case 'Numpad4': app.vp.orbitStep(-step, 0); break;
+      case 'Numpad6': app.vp.orbitStep(step, 0); break;
+      case 'Numpad8': app.vp.orbitStep(0, -step); break;
+      case 'Numpad2': app.vp.orbitStep(0, step); break;
+      case 'Numpad9': app.vp.orbitStep(Math.PI, 0); break;
+      case 'Numpad0': app.vp.toggleMax(); break;
+      case 'NumpadDecimal': app.vp.frameSelected(false); break;
+      default: return false;
+    }
     return true;
   }
   const dir = ARROWS[e.key];

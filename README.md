@@ -39,7 +39,7 @@ npm run e2e
 
 | Action | Input |
 | --- | --- |
-| Orbit | Right drag, or Alt + left drag. It turns around the part of the model under the mouse, or the selection when the mouse is over empty space |
+| Orbit | Right drag, or Alt + left drag, turning like Blender's turntable: sideways turns about the up axis, up and down tilts, and it carries on over the top and underneath without stopping. It turns around the part of the model under the mouse, or the selection when the mouse is over empty space. A pen's barrel button works as the right button |
 | Bank (perspective) | Alt + right drag; Shift + G levels the view |
 | Pan | Middle drag, or Alt + drag in an orthographic view |
 | Pan along the ground (perspective) | Shift + Alt + left drag |
@@ -51,9 +51,10 @@ npm run e2e
 | Zoom by keyboard | `.` in, `,` out; hold Shift for double |
 | Center view at mouse | V |
 | Fit all / selected | A / Shift + A |
-| Change view | Numpad 1 Back/Front, 2 Top/Bottom, 3 Right/Left, 4 Perspective |
+| Change view (numpad, as in Blender) | 1 Front, 3 Right, 7 Top; with Ctrl, or pressed again, the opposite side. 5 switches between perspective and orthographic, keeping the direction. 4 and 6 orbit 15° sideways, 8 and 2 tilt 15°, 9 swings round to the other side. `.` frames the selection |
 | Select | Click or drag a box; Shift adds, Ctrl removes |
-| Tools | Q select, W move, E rotate, T extrude, J joint, B weight paint, C sculpt. The Scale tool is in the toolbar |
+| Tools | Q select, W move, T extrude, J joint, B weight paint, C sculpt. The Rotate and Scale tools are in the toolbar |
+| Extrude like Blender | E over a view: selected faces push out along their normal and follow the mouse; selected edges (or points along them) pull out into new faces and move with the mouse. X, Y or Z locks an axis, typing gives an exact distance, a click keeps it. From the Mesh menu or the side panel it extrudes by a set distance instead, which you can change afterwards (Distance, and Along vertex normals or a direction for edges) |
 | Move, rotate, scale like Blender | G, R or S over a view: the selection follows the mouse. G moves it in the view's plane, R turns it as you circle the mouse around it, S scales it by your distance from it |
 | While moving, rotating or scaling | X, Y or Z locks an axis (Shift for the other two; the same key again unlocks). Type a number for an exact distance, angle in degrees or factor. Ctrl snaps, Shift is fine. Click or Enter keeps it, Esc or right click cancels |
 | Modes | 1 vertex, 2 edge, 3 face, 4 group, 5 joint |
@@ -92,6 +93,67 @@ Both tools work the way Blender's do. Pressed on the keyboard they do one job an
 **Loop Cut (Ctrl+R):** Hover an edge to preview the loop across it. Wheel, Page Up/Down, + and - or typed digits change the number of cuts. Click to place it, then move to slide and click to confirm, or drag to do both at once. Right click or Esc during the slide leaves it centred. While sliding: E even, F flip, C clamp, Alt holds the clamp off, Shift for precision, Ctrl to snap, or type a value from -1 to 1. Number of Cuts, Factor, Smoothness, Even and Flipped stay adjustable in the panel afterward.
 
 **Knife (K, or Shift+K for selected faces only):** Click to place points, or drag to draw. Points snap to corners and edges; Ctrl snaps to edge midpoints and Shift turns snapping off. Enter or Space confirms, Esc cancels, E or a right click starts a new line, a double-click closes the loop, and Ctrl+Z takes back a point. A toggles angle snapping, C cuts through to the far side, X, Y and Z lock to an axis, and S shows lengths and angles. The middle mouse button and wheel still move the view. A cut that stops partway across a face runs on to the nearest corner, so every face stays a clean outline. In Animate, K still keys a pose.
+
+## Building faces
+
+The Face tool builds a mesh point by point, in any view, as Blender's Poly Build does.
+
+- **Where points go:** on the model under the mouse, so you can draw a new mesh over an old one, or else on a plane through your last point: facing the view in perspective (so a mesh can climb and turn), or the view's own plane in front, side and top views. Alt places one point freely, past surfaces and points.
+- **Carrying on:** click a vertex of any visible mesh to use it, or an open edge to build from it; faces that use an existing mesh's points join that mesh, and a drawing started in empty space is a new mesh.
+- **Editing as you go:** each new face is selected, so G moves it, R rotates, S scales, T extrudes and Ctrl+B, I, M and the rest work without leaving the tool. Shift+click selects what's under the mouse instead of adding a point. G over a vertex grabs just that vertex to move with the mouse; click to place it.
+- **Finishing:** Enter or a double-click makes the face and finishes the drawing. Clicking the first point makes it too. Backspace or a right click takes the last point back; a right drag still orbits. Esc stops.
+- **Options, in the Scene panel while the tool is on:**
+  - *Shape:* Free (any number of corners), Tri or Quad (the face is made as soon as it has 3 or 4).
+  - *After a face:* Finish, or Continue from its last edge as a strip (Tab flips which end); with Quad, two clicks then add each next quad.
+  - *Perspective plane:* View or Ground (N switches).
+  - *Land on surfaces*, *Snap to vertices*, *Double sided* (sets the mesh's material to show both sides), *Smooth* and *Mirror X* (builds the mirrored face too, sharing points on the centre line).
+  - *Flip faces* turns the selected faces (or the last one made) round; *Face outward* turns the whole mesh (or the selection) to face outward.
+
+## Mirroring
+
+Two kinds, as in Blender:
+
+- **Symmetry (Mirror X, Shift+X):** edit one side and the other follows: moves, sculpting, weight painting, blockout pieces and new faces.
+- **Live mirror (the Mirror card in the Scene panel):** with Mirror on, or on a part that has one, press Add Mirror. The part shows mirrored without the copy being real, so you model one half. As Blender's Mirror modifier:
+  - *Axis* X, Y and Z, in any mix.
+  - *Bisect* cuts the mesh at the mirror plane first, dropping what's past it; *Flip* keeps the other side.
+  - *Mirror object* sets what the planes pass through: the world origin, a joint, or another part's centre.
+  - *Clipping* stops points crossing the plane while you edit, and keeps points on it there.
+  - *Merge* joins the halves along the seam, within its distance; *Bisect distance* says how close counts as on the plane.
+  - The eye turns it off and on, the tick applies it (making the mirrored half real), and the cross removes it. Exports apply it for you.
+
+## Tools for each selection mode
+
+The Scene panel opens with the tools for the selection mode in use (Vertex, Edge, Face, Group or Joint), as buttons grouped by what they do. Hovering any button in the app shows its name, its shortcut as keys and what it does:
+
+- **Vertex editing:** move, rotate and scale; merge, weld, collapse, connect, make face and dissolve; relax, flatten, circle, space, curve and extrude; fill, grid fill and bridge; selecting linked, grown, shrunk, by path or open edges; duplicate and delete.
+- **Edge editing:** extrude, bevel, loop cut, knife, bridge and spin; circle, space, curve, flatten, merge and dissolve; fills; seams; loop, ring and other selections.
+- **Face editing:** extrude, inset, bevel, poke, subdivide and solidify; dissolve, triangulate, to quads, mirror, bridge and merge; flip and outside; shading; detach, separate, loose parts, duplicate and delete; and selecting by coplanar, n-gons, triangles, checker or path.
+- **Group editing:** duplicate, merge, loose parts, mirror and delete; centre, to ground and real-world height; shading; LODs and colliders.
+- **Joint editing:** add, insert, mirror, humanoid and delete; move, rotate, IK drag and test pose; weighting, assigning, painting and finding unweighted vertices.
+
+## Seeing and picking faces
+
+- The backs of faces show in a see-through red, as Blender's face orientation does, so a face turned the wrong way stands out; select it from behind and Mesh > Flip Normals turns it round. View > Show Back Faces turns the tint off.
+- Clicks select the nearest face from either side.
+- What a click would select lights up under the mouse: the face (or the whole group in Group mode), edge or vertex.
+- The side panel's sections fold away with a click on their heading, and stay folded.
+
+## Shaping, filling and joining
+
+All in the Mesh menu, after Blender and its LoopTools add-on. Each leaves its settings in the panel at the foot of the view, to change after.
+
+- **Inset (I):** as Blender's: the selected faces inset as one region with an even border. Over a view, move the mouse toward the selection's middle to widen it; Ctrl+mouse sets Depth (in or out), I switches Individual (each face on its own), E switches Even, Shift is finer, and typing gives an exact width. Click or Enter keeps it, right click or Esc cancels; Thickness, Depth, Individual and Even stay adjustable in the panel.
+- **Merge (M):** the selected vertices become one, at their centre, the first or last picked, or only those within a distance of each other. In Group mode (4), M merges the selected groups instead.
+- **Bevel (Ctrl+B):** cuts the selected edges back into flat strips by Width, with a small face where bevelled edges meet. In Face mode it bevels the faces' edges.
+- **Loop tools:** Circle makes a loop round in its own plane; Flatten moves points onto the plane that fits them; Space Evenly spreads a loop's points evenly along it; Curve smooths a line of edges into an even curve; Relax smooths points. They work on selected edges, points, or the rim of selected faces.
+- **Bridge Edge Loops:** joins two or more loops with faces, lining them up and handling different point counts; Segments adds rows between and Twist turns one. In Face mode, select two faces and it opens a tube between them.
+- **Grid Fill:** fills a hole with a grid of quads that follows its rim; the hole needs an even number of edges. Span sets how many across, Offset where the grid starts. **Fill** closes any hole with triangles. Select the hole's edge first.
+- **Dissolve:** removes the selected points, edges or faces but keeps the surface: the faces around join into one.
+- **Connect Vertices:** splits faces with an edge between selected vertices on them. **Poke Faces** fans triangles from each face's middle.
+- **Solidify** gives a surface thickness. **Spin** sweeps a profile of edges round an axis, like a lathe.
+- **Separate Loose Parts** gives each separate piece its own group.
+- **Selecting (Edit menu):** Shortest Path between two selected vertices, edges or faces; N-gons; Triangles; Checker Deselect.
 
 ## Blocking out
 

@@ -37,6 +37,28 @@ export interface Group {
   kind: GroupKind;
   /** Colour in the Blockout view, as sRGB hex. Automatic when absent. */
   color?: string;
+  /** A live mirror, as Blender's Mirror modifier: shown mirrored, made real when applied or exported. */
+  mirror?: MirrorMod;
+}
+
+/** Mirror settings for a group. Each array is X, Y, Z. */
+export interface MirrorMod {
+  /** Shown in the view and applied on export. */
+  on: boolean;
+  axis: [boolean, boolean, boolean];
+  /** Cut the mesh at the mirror plane before mirroring, dropping what's past it. */
+  bisect: [boolean, boolean, boolean];
+  /** Keep the other side when bisecting. */
+  flip: [boolean, boolean, boolean];
+  /** What the planes pass through: the world origin when null, else a joint or another group's centre. */
+  pivot: { kind: 'joint' | 'group'; id: number } | null;
+  /** Points can't cross the mirror plane while editing, and those on it stay on it. */
+  clipping: boolean;
+  /** Join points on the seam with their mirrored copies, within this distance. */
+  merge: boolean;
+  mergeDistance: number;
+  /** How close to the plane a point counts as on it, when bisecting. */
+  bisectDistance: number;
 }
 
 export type MapSlot = 'base' | 'normal' | 'orm' | 'emissive';
@@ -243,7 +265,7 @@ export function cloneModel(m: Model): Model {
       if (f.pin) c.pin = f.pin.slice();
       return c;
     }),
-    groups: m.groups.map((g) => ({ ...g })),
+    groups: m.groups.map((g) => (g.mirror ? { ...g, mirror: structuredClone(g.mirror) } : { ...g })),
     materials: m.materials.map((x) => ({ ...x, maps: { ...x.maps } })),
     // Each texture record is copied, so editing one (painting changes its image) leaves the undo snapshot alone.
     // The image strings themselves are shared, not copied.

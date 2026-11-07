@@ -1,4 +1,5 @@
 // Minimal DOM helpers and the shared form controls.
+import { glyph } from './glyphs';
 
 type Child = Node | string | number | null | undefined | false | Child[];
 
@@ -121,34 +122,75 @@ const FILLED = 'fill="currentColor" stroke="none"';
 
 /** Shared interface icons, drawn on a 24 x 24 grid. */
 export const ICONS = {
-  pan: '<path d="M12 3v18M3 12h18M12 3l-3 3M12 3l3 3M12 21l-3-3M12 21l3-3M3 12l3-3M3 12l3 3M21 12l-3-3M21 12l-3 3"/>',
-  rotate: '<path d="M20 12a8 8 0 1 1-2.6-5.9"/><path d="M20 3v5h-5"/>',
-  zoom: '<circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5L21 21"/>',
-  maximize: '<path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/>',
-  check: '<path d="M5 12.5l4.5 4.5L19 7"/>',
-  close: '<path d="M6 6l12 12M18 6L6 18"/>',
-  plus: '<path d="M12 5v14M5 12h14"/>',
+  search: glyph('search'),
+  pan: glyph('tool-move'),
+  rotate: glyph('rotate-ccw'),
+  zoom: glyph('zoom-in'),
+  maximize: glyph('maximize'),
+  check: glyph('check'),
+  close: glyph('close'),
+  plus: glyph('plus'),
   minus: '<path d="M5 12h14"/>',
   info: '<path d="M12 11v7"/><circle cx="12" cy="6.5" r="1.4" fill="currentColor" stroke="none"/>',
-  warning: '<path d="M12 5v9"/><circle cx="12" cy="18.5" r="1.4" fill="currentColor" stroke="none"/>',
+  warning: glyph('warning'),
   dot: `<circle cx="12" cy="12" r="6" ${FILLED}/>`,
-  play: `<path d="M7 4.5v15l12-7.5z" ${FILLED}/>`,
-  pause: `<rect x="6" y="4.5" width="4.5" height="15" rx="1" ${FILLED}/><rect x="13.5" y="4.5" width="4.5" height="15" rx="1" ${FILLED}/>`,
-  first: `<rect x="4.5" y="5" width="3" height="14" rx="1" ${FILLED}/><path d="M20 5v14L9 12z" ${FILLED}/>`,
-  last: `<rect x="16.5" y="5" width="3" height="14" rx="1" ${FILLED}/><path d="M4 5v14l11-7z" ${FILLED}/>`,
-  prevKey: `<path d="M11 5v14L2.5 12z" ${FILLED}/><path d="M17 6.5l5 5.5-5 5.5-5-5.5z" ${FILLED}/>`,
-  nextKey: `<path d="M13 5v14l8.5-7z" ${FILLED}/><path d="M7 6.5l5 5.5-5 5.5-5-5.5z" ${FILLED}/>`,
+  play: glyph('play'),
+  pause: glyph('pause'),
+  first: glyph('skip-start'),
+  last: glyph('skip-end'),
+  prevKey: glyph('chevron-left'),
+  nextKey: glyph('chevron-right'),
 };
 
+/** Icons for the side panel's sections, by title. */
+const SECTION_ICONS: Record<string, Parameters<typeof glyph>[0]> = {
+  Selection: 'cursor-select', Groups: 'layers', Shading: 'shading-solid', 'Game-ready meshes': 'tools', 'Face tool': 'fill-face',
+  Mirror: 'modifier-mirror', Materials: 'material', Preview: 'shading-rendered', Looks: 'brush', Images: 'image', Surface: 'material',
+  Finish: 'shading-textured', 'Texture maps': 'texture', 'Texture placement': 'uv', Gradient: 'paint', 'Test pose': 'pose',
+  Skeleton: 'armature', Constraints: 'constraint', Skinning: 'vertex-group', 'Weight paint': 'paint', Display: 'display',
+  Checks: 'check', Budget: 'settings', Joint: 'bone', 'Reference images': 'image', 'Start from': 'mesh-cube',
+  'Draw body parts': 'tool-shape-draw', 'Draw any shape': 'tool-poly-draw', Detail: 'subdivide', 'Shape it': 'tool-scale',
+  Colour: 'paint', Arrange: 'grid', Pieces: 'layers', Precision: 'snap', 'Vertex weights': 'vertex-group',
+  'Vertex editing': 'vertex-select', 'Edge editing': 'edge-select', 'Face editing': 'face-select', 'Group editing': 'object-mode', 'Joint editing': 'bone',
+};
+
+// Folded sections stay folded between sessions.
+const FOLD_KEY = 'thickshake.foldedSections';
+const folded: Set<string> = (() => { try { return new Set(JSON.parse(localStorage.getItem(FOLD_KEY) ?? '[]')); } catch { return new Set(); } })();
+
+/** A side panel section: a header that folds it away, with an icon by its title, then its contents. */
 export function section(title: string, ...kids: Child[]): HTMLElement {
-  return h('section', { class: 'panel-section' }, h('h3', null, title), kids);
+  const icon = SECTION_ICONS[title];
+  const el = h('section', { class: `panel-section${folded.has(title) ? ' folded' : ''}` });
+  const head = h('button', {
+    class: 'section-head', 'aria-expanded': String(!folded.has(title)), title: 'Fold or unfold',
+    onclick: () => {
+      const now = !folded.has(title);
+      if (now) folded.add(title); else folded.delete(title);
+      try { localStorage.setItem(FOLD_KEY, JSON.stringify([...folded])); } catch { /* storage may be off */ }
+      el.classList.toggle('folded', now);
+      head.setAttribute('aria-expanded', String(!now));
+    },
+  }, svgIcon('<path d="M9 6l6 6-6 6"/>', 12), icon ? h('span', { class: 'section-icon', html: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">${glyph(icon)}</svg>` }) : null, h('h3', null, title));
+  el.append(head, h('div', { class: 'section-body' }, kids));
+  return el;
 }
 
 /** Replace a host's content, keeping scroll position, unless the user is typing inside it. */
-export function renderInto(host: HTMLElement, build: () => Child) {
-  if (scrubbing) return;
+/** A field the user is typing in or dragging, which a redraw would take away from under them. Checkboxes, radios,
+ *  buttons and drop-downs keep focus after a click but aren't mid-use, so they don't hold redraws back. */
+function inUse(el: Element | null): boolean {
+  if (!el) return false;
+  if (el.tagName === 'TEXTAREA') return true;
+  if (el.tagName !== 'INPUT') return false;
+  const t = (el as HTMLInputElement).type;
+  return !['checkbox', 'radio', 'button', 'submit', 'reset', 'color', 'file'].includes(t);
+}
+
+export function renderInto(host: HTMLElement, build: () => Child, force = false) {
+  if (scrubbing && !force) return;
   const active = document.activeElement;
-  if (active && host.contains(active) && (active.tagName === 'INPUT' || active.tagName === 'SELECT' || active.tagName === 'TEXTAREA')) return;
+  if (!force && active && host.contains(active) && inUse(active)) return;
   const top = host.scrollTop;
   host.replaceChildren();
   append(host, [build()]);

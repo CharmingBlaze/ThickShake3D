@@ -2,6 +2,7 @@
 import { flattenTrack } from '../core/anim';
 import { faceNormalRaw, triangulateFace } from '../core/geom';
 import { prepareRigForExport } from '../core/constraints';
+import { applyAllMirrors } from '../core/mirror';
 import { bonesTopo } from '../core/skeleton';
 import type { Face, Group, Model, Texture, V3 } from '../core/types';
 
@@ -188,7 +189,7 @@ function hexToLinear(hex: string): [number, number, number] {
 
 export function buildGltf(m: Model, o: ExportOptions): { json: any; bin: Uint8Array } {
   // Engines read keys: constraints are baked into them, and posing controls such as IK targets are left out.
-  m = prepareRigForExport(m);
+  m = prepareRigForExport(applyAllMirrors(m));
   const b = new BinBuilder();
   const json: any = {
     asset: { version: '2.0', generator: 'ThickShake 1.0' },
