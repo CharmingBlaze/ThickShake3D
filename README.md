@@ -259,6 +259,13 @@ GLB and MS3D store linear keys here, so curves export as the motion they produce
 
 Drag the dividers between the four viewports, the UV editor, the 3D view, the side panel and the timeline. Dragging from where the viewport dividers cross moves both at once. Double-click a divider to reset it. Sizes are remembered between runs.
 
+## Files and keeping work safe
+
+- **Autosave** keeps unsaved work a few seconds after you stop editing, every 45 seconds during long sessions, and whenever the window loses focus. If ThickShake closes without saving, the next start offers to recover it, saying which project it was, when it was kept and what's in it, and brings it back under its own name, still unsaved. In a browser it's kept in the browser's own storage, which holds projects with textures too.
+- **Open Recent** (File menu, Ctrl+Shift+O) lists the projects you opened or saved lately. The desktop app finds them by their path; a browser keeps the last few in its own storage, since it can't reopen files from disk.
+- **Save a Copy** writes the project to another file and carries on with this one, unsaved changes and all.
+- **Your own shortcuts:** Help > Customize Shortcuts lists every command with its key. Click a key and press the new one; Backspace clears it. Taking a key another command used leaves that one without a key, and says so. Reset puts one back, Reset all puts every key back. Keys inside the view's tools (G, R and S while moving, and the paint and tile keys) stay as they are.
+
 ## Conventions
 
 - +Y is up, the space is right-handed, and 1 unit = 1 metre.

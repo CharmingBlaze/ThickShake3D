@@ -19,14 +19,27 @@ const WIRE_DARK = 0x14161a;
 const WIRE_LIGHT = 0x9aa3ad;
 export const SELECT_HEX = 0xf2b24c;
 
+/** A triangle's own corners, in order. */
+const TRI = [0, 1, 2];
+
 interface GroupRender {
   id: number;
   mesh: THREE.Mesh;
   /** Vertex index per GPU corner. */
   corners: Int32Array;
-  /** Per-corner source: face index, for normal calculation. */
+  /** Per-corner source: face index, for picking. */
   cornerFace: Int32Array;
   faces: number[];
+  /**
+   * Normals, worked out once per rebuild so updates are plain array work: each face's vertices (from faceStart),
+   * the normal slot each of them adds its face's normal to, and the slot each corner reads. A smooth face's vertices
+   * share a slot per (vertex, smoothing group); a flat face has one slot of its own.
+   */
+  faceStart: Int32Array;
+  faceVerts: Int32Array;
+  faceVertSlot: Int32Array;
+  cornerSlot: Int32Array;
+  slotCount: number;
 }
 
 /** Heat ramp for weights: blue (0) to green to red (1). */
@@ -251,38 +264,71 @@ export class SceneGraph {
     for (const g of m.groups) {
       const faces = byGroup.get(g.id);
       if (!faces) continue;
-      const corners: number[] = [], cornerFace: number[] = [], uvs: number[] = [];
-      for (const fi of faces) {
+      // Triangles first, to size every array once.
+      const tris: number[][] = new Array(faces.length);
+      const faceStart = new Int32Array(faces.length + 1);
+      let total = 0, n = 0;
+      faces.forEach((fi, k) => {
         const f = m.faces[fi];
-        const t = triangulateFace(m, f);
-        for (const k of t) {
-          corners.push(f.v[k]);
-          cornerFace.push(fi);
-          uvs.push(f.uv[k]?.[0] ?? 0, f.uv[k]?.[1] ?? 0);
+        faceStart[k] = total;
+        total += f.v.length;
+        // Triangles and quads need no general triangulation.
+        tris[k] = f.v.length === 3 ? TRI : triangulateFace(m, f);
+        n += tris[k].length;
+      });
+      faceStart[faces.length] = total;
+      const faceVerts = new Int32Array(total), faceVertSlot = new Int32Array(total);
+      const corners = new Int32Array(n), cornerFace = new Int32Array(n), cornerSlot = new Int32Array(n), uvs = new Float32Array(n * 2);
+      // Normal slots: per (vertex, smoothing group) for smooth faces, per face for flat ones. Each smoothing group
+      // gets a lookup by vertex; models use few groups.
+      const nv = m.verts.length;
+      const bySmooth = new Map<number, Int32Array>();
+      let slots = 0, c = 0;
+      faces.forEach((fi, k) => {
+        const f = m.faces[fi];
+        const flat = f.s ? -1 : slots++;
+        let look: Int32Array | undefined;
+        if (f.s) {
+          look = bySmooth.get(f.s);
+          if (!look) { look = new Int32Array(nv).fill(-1); bySmooth.set(f.s, look); }
         }
-      }
+        const s0 = faceStart[k];
+        for (let i = 0; i < f.v.length; i++) {
+          const v = f.v[i];
+          faceVerts[s0 + i] = v;
+          if (look) { if (look[v] < 0) look[v] = slots++; faceVertSlot[s0 + i] = look[v]; }
+          else faceVertSlot[s0 + i] = flat;
+        }
+        for (const t of tris[k]) {
+          corners[c] = f.v[t];
+          cornerFace[c] = fi;
+          cornerSlot[c] = faceVertSlot[s0 + t];
+          const uv = f.uv[t];
+          uvs[c * 2] = uv?.[0] ?? 0; uvs[c * 2 + 1] = uv?.[1] ?? 0;
+          c++;
+        }
+      });
       const geo = new THREE.BufferGeometry();
-      const n = corners.length;
       geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(n * 3), 3));
       geo.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(n * 3), 3));
-      geo.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(uvs), 2));
+      geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
       geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(n * 3), 3));
       const mesh = new THREE.Mesh(geo, this.fallbackMat);
       mesh.frustumCulled = false;
       mesh.visible = g.visible;
       this.meshRoot.add(mesh);
-      this.groups.set(g.id, { id: g.id, mesh, corners: Int32Array.from(corners), cornerFace: Int32Array.from(cornerFace), faces });
+      this.groups.set(g.id, { id: g.id, mesh, corners, cornerFace, faces, faceStart, faceVerts, faceVertSlot, cornerSlot, slotCount: slots });
     }
+    this.weightsFor = undefined;
     this.updatePositions();
     this.rebuildWire();
   }
 
   /** Recompute positions + smoothing-group normals from current display positions. */
   updatePositions() {
-    const m = ed.model;
     const P = ed.displayPositions();
     for (const r of this.groups.values()) {
-      const { corners, cornerFace, faces, mesh } = r;
+      const { corners, faceStart, faceVerts, faceVertSlot, cornerSlot, mesh } = r;
       const posA = mesh.geometry.getAttribute('position') as THREE.BufferAttribute;
       const nrmA = mesh.geometry.getAttribute('normal') as THREE.BufferAttribute;
       const pos = posA.array as Float32Array, nrm = nrmA.array as Float32Array;
@@ -290,33 +336,32 @@ export class SceneGraph {
         const v = corners[i] * 3;
         pos[i * 3] = P[v]; pos[i * 3 + 1] = P[v + 1]; pos[i * 3 + 2] = P[v + 2];
       }
-      // Face normals, then accumulate per (vertex, smoothing group).
-      const fn = new Map<number, [number, number, number]>();
-      const acc = new Map<string, [number, number, number]>();
-      for (const fi of faces) {
-        const f = m.faces[fi];
+      // Each face's area-weighted (Newell) normal, added to its vertices' slots.
+      const acc = new Float64Array(r.slotCount * 3);
+      const nf = faceStart.length - 1;
+      for (let k = 0; k < nf; k++) {
+        const s0 = faceStart[k], s1 = faceStart[k + 1], c = s1 - s0;
         let x = 0, y = 0, z = 0;
-        const c = f.v.length;
         for (let i = 0; i < c; i++) {
-          const a = f.v[i] * 3, b = f.v[(i + 1) % c] * 3;
+          const a = faceVerts[s0 + i] * 3, b = faceVerts[s0 + ((i + 1) % c)] * 3;
           x += (P[a + 1] - P[b + 1]) * (P[a + 2] + P[b + 2]);
           y += (P[a + 2] - P[b + 2]) * (P[a] + P[b]);
           z += (P[a] - P[b]) * (P[a + 1] + P[b + 1]);
         }
-        fn.set(fi, [x, y, z]);
-        if (f.s) {
-          for (const v of f.v) {
-            const k = `${v}|${f.s}`;
-            const e = acc.get(k);
-            if (e) { e[0] += x; e[1] += y; e[2] += z; } else acc.set(k, [x, y, z]);
-          }
+        let last = -1;
+        for (let i = s0; i < s1; i++) {
+          const sl = faceVertSlot[i];
+          // A flat face's vertices all share its slot: add once.
+          if (sl === last) continue;
+          last = sl;
+          acc[sl * 3] += x; acc[sl * 3 + 1] += y; acc[sl * 3 + 2] += z;
         }
       }
       for (let i = 0; i < corners.length; i++) {
-        const f = m.faces[cornerFace[i]];
-        const n = f.s ? acc.get(`${corners[i]}|${f.s}`)! : fn.get(cornerFace[i])!;
-        const l = Math.hypot(n[0], n[1], n[2]) || 1;
-        nrm[i * 3] = n[0] / l; nrm[i * 3 + 1] = n[1] / l; nrm[i * 3 + 2] = n[2] / l;
+        const sl = cornerSlot[i] * 3;
+        const x = acc[sl], y = acc[sl + 1], z = acc[sl + 2];
+        const l = Math.hypot(x, y, z) || 1;
+        nrm[i * 3] = x / l; nrm[i * 3 + 1] = y / l; nrm[i * 3 + 2] = z / l;
       }
       posA.needsUpdate = true; nrmA.needsUpdate = true;
     }
@@ -332,31 +377,39 @@ export class SceneGraph {
   private rebuildWire() {
     const m = ed.model;
     const hidden = new Set(m.groups.filter((g) => !g.visible).map((g) => g.id));
-    const seen = new Set<string>();
+    // Each edge once: a short list of the edges found so far from each lower vertex, checked without hashing.
+    const nv = m.verts.length;
+    const head = new Int32Array(nv).fill(-1);
+    const other: number[] = [], next: number[] = [];
     const pairs: number[] = [];
-    const vis = new Set<number>();
-    const faceVerts = new Set<number>();
+    const vis = new Uint8Array(nv), used = new Uint8Array(nv);
     for (const f of m.faces) {
+      const hide = hidden.has(f.g);
       for (let i = 0; i < f.v.length; i++) {
         const a = f.v[i], b = f.v[(i + 1) % f.v.length];
-        faceVerts.add(a);
-        if (hidden.has(f.g)) continue;
-        vis.add(a);
-        const k = a < b ? `${a}_${b}` : `${b}_${a}`;
-        if (!seen.has(k)) { seen.add(k); pairs.push(a, b); }
+        used[a] = 1;
+        if (hide) continue;
+        vis[a] = 1;
+        const lo = a < b ? a : b, hi = a < b ? b : a;
+        let e = head[lo];
+        while (e >= 0 && other[e] !== hi) e = next[e];
+        if (e >= 0) continue;
+        other.push(hi); next.push(head[lo]); head[lo] = other.length - 1;
+        pairs.push(a, b);
       }
     }
     // Loose vertices stay visible and selectable.
-    m.verts.forEach((_, i) => { if (!faceVerts.has(i)) vis.add(i); });
+    const visList: number[] = [];
+    for (let i = 0; i < nv; i++) if (vis[i] || !used[i]) visList.push(i);
     this.edgeIndex = Int32Array.from(pairs);
-    this.visibleVerts = Int32Array.from(vis);
+    this.visibleVerts = Int32Array.from(visList);
     this.edges.geometry.dispose();
     this.points.geometry.dispose();
     const eg = new THREE.BufferGeometry();
     eg.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pairs.length * 3), 3));
     this.edges.geometry = eg;
     const pg = new THREE.BufferGeometry();
-    pg.setAttribute('position', new THREE.BufferAttribute(new Float32Array(vis.size * 3), 3));
+    pg.setAttribute('position', new THREE.BufferAttribute(new Float32Array(visList.length * 3), 3));
     this.points.geometry = pg;
     this.updateWireBuffers();
   }
@@ -423,14 +476,28 @@ export class SceneGraph {
   }
 
   /** Fill the color attribute with the active bone's weight heat map. */
+  /** Which joint the weight colours show, so they aren't filled again for nothing. Undefined after a rebuild. */
+  private weightsFor: number | null | undefined = undefined;
+
   updateWeights() {
     const bone = ed.activeBone;
+    // With no joint, the colours are plain and don't depend on the weights: fill them once.
+    if (bone === null && this.weightsFor === null) return;
+    this.weightsFor = bone;
+    const m = ed.model;
+    // Once per vertex, then copied to each corner.
+    const per = new Float32Array(m.verts.length * 3);
+    for (let v = 0; v < m.verts.length; v++) {
+      const [a, b, c] = bone !== null ? heat(boneWeight(m, v, bone)) : [0.05, 0.1, 0.75];
+      per[v * 3] = a; per[v * 3 + 1] = b; per[v * 3 + 2] = c;
+    }
     for (const r of this.groups.values()) {
       const col = r.mesh.geometry.getAttribute('color') as THREE.BufferAttribute;
       const arr = col.array as Float32Array;
-      for (let i = 0; i < r.corners.length; i++) {
-        const [a, b, c] = bone !== null ? heat(boneWeight(ed.model, r.corners[i], bone)) : [0.05, 0.1, 0.75];
-        arr[i * 3] = a; arr[i * 3 + 1] = b; arr[i * 3 + 2] = c;
+      const corners = r.corners;
+      for (let i = 0; i < corners.length; i++) {
+        const v = corners[i] * 3;
+        arr[i * 3] = per[v]; arr[i * 3 + 1] = per[v + 1]; arr[i * 3 + 2] = per[v + 2];
       }
       col.needsUpdate = true;
     }

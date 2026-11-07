@@ -417,3 +417,17 @@ body.dropping::after { content: "Drop to import"; position: fixed; inset: 8px; z
 .constraint-card { border: 1px solid var(--line-2); padding: 6px; margin-bottom: 6px; display: flex; flex-direction: column; gap: 4px; }
 .constraint-head { display: flex; align-items: center; justify-content: space-between; }
 .bone-dot.control { border-radius: 0; transform: rotate(45deg); background: #8fe0a6; }
+
+/* Open recent */
+.recent-list { display: flex; flex-direction: column; gap: 2px; max-height: 360px; overflow: auto; }
+.recent-row { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 6px 8px; text-align: left; background: transparent; border: 1px solid transparent; border-radius: 0; color: inherit; cursor: pointer; }
+.recent-row:hover { background: rgba(255, 255, 255, 0.05); border-color: var(--line-2); }
+
+/* Keymap editor */
+.keymap-list { display: flex; flex-direction: column; max-height: 420px; overflow: auto; border: 1px solid var(--line-2); }
+.keymap-row { display: grid; grid-template-columns: 1fr 130px 64px; align-items: center; gap: 6px; padding: 3px 6px; }
+.keymap-row:nth-child(odd) { background: rgba(255, 255, 255, 0.025); }
+.keymap-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.keymap-key { font: 11px ui-monospace, Consolas, monospace; padding: 3px 6px; border: 1px solid var(--line-2); border-radius: 0; background: #16181c; color: inherit; cursor: pointer; text-align: center; }
+.keymap-key.changed { border-color: #f2b24c; color: #f2b24c; }
+.keymap-key.listening { border-color: #7fc8f8; color: #7fc8f8; }

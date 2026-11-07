@@ -1,13 +1,14 @@
 // ThickShake application shell.
+import { applyKeymap } from './ui/keymap';
 import './style.css';
 import { ed, type Workspace } from './core/editor';
 import { emptyModel } from './core/types';
 import { defaultExport, exportGLB } from './io/gltf';
 import { importFile } from './io/importer';
 import { exportMS3D } from './io/ms3d';
-import { autosave, native, recentFiles } from './io/platform';
+import { autosave, native, openRecent, recentFiles } from './io/platform';
 import { exportOBJ } from './io/simple';
-import { parseProject, serializeProject } from './io/project';
+import { autosaveInfo, parseProject, serializeProject } from './io/project';
 import { app } from './ui/app';
 import { addReference, bindShortcuts, commands, confirmDiscard, isImageFile, loadOpened, mergeOpened, runCommand, TOOLS, WORKSPACE_LIST } from './ui/commands';
 import { button, h, ICONS, numField, renderInto, svgIcon } from './ui/dom';
@@ -25,7 +26,7 @@ import { Viewports } from './view/viewports';
 
 // ---------- menus ----------
 const MENUS: [string, (string | null)[]][] = [
-  ['File', ['file.new', 'file.open', null, 'file.save', 'file.saveAs', null, 'file.import', 'file.export', null, 'file.sample', ...(native ? [null, 'file.quit'] : [])]],
+  ['File', ['file.new', 'file.open', 'file.openRecent', null, 'file.save', 'file.saveAs', 'file.saveCopy', null, 'file.import', 'file.export', null, 'file.sample', ...(native ? [null, 'file.quit'] : [])]],
   ['Edit', ['edit.undo', 'edit.redo', null, 'edit.duplicate', 'edit.delete', null, 'select.all', 'select.none', 'select.invert', 'select.grow', 'select.shrink', 'select.linked', null, 'select.loop', 'select.ring', 'select.boundary', 'select.similarNormal']],
   ['Create', ['tool.box', 'tool.sphere', 'tool.geosphere', 'tool.cylinder', 'tool.cone', 'tool.limb', 'tool.stroke', 'tool.blob', 'tool.pen', 'tool.lathe', 'tool.capsule', 'tool.tapered', 'tool.pyramid', 'tool.wedge', 'tool.stairs', 'tool.doorway', 'tool.plane', 'tool.torus', null, 'create.lowPoly', 'create.onSurface', null, 'tool.vertex', 'tool.face', 'tool.joint']],
   ['Mesh', ['tool.extrude', 'mesh.inset', 'tool.loopcut', 'tool.knife', 'mesh.subdivide', 'mesh.makeFace', 'mesh.fillHoles', null, 'mesh.weld', 'mesh.collapse', 'mesh.weldAll', 'mesh.smoothVerts', null, 'mesh.triangulate', 'mesh.quadify', 'mesh.mirror', null, 'mesh.detach', 'mesh.regroup', 'mesh.mergeGroups', null, 'mesh.flip', 'mesh.fixNormals', 'mesh.smoothShade', 'mesh.flatShade', 'mesh.autoSmooth', null, 'mesh.centerOrigin', 'mesh.ground', 'mesh.rescale']],
@@ -34,7 +35,7 @@ const MENUS: [string, (string | null)[]][] = [
   ['Animate', ['anim.play', 'anim.togglePose', 'tool.ik', null, 'anim.key', 'anim.deleteKey', 'anim.prevKey', 'anim.nextKey', null, 'anim.copyPose', 'anim.pastePose', 'anim.pasteMirrored', 'anim.mirrorPose', 'anim.resetPose', null, 'anim.newClip', 'anim.duplicateClip', 'anim.deleteClip', 'anim.makeLoop', 'anim.mirrorClip', 'anim.reverse', 'anim.retime', 'anim.reduce', 'anim.bake', null, 'anim.onion', 'anim.trail']],
   ['Game', ['mesh.generateLods', 'mesh.collisionHull', 'mesh.collisionBox', null, 'game.bake', 'game.atlas', null, 'mesh.cleanDegenerate', 'mesh.cleanLoose', 'mesh.triangulateNgons', null, 'file.export']],
   ['View', ['view.frame', 'view.frameAll', 'view.maximize', 'view.center', 'view.zoomIn', 'view.zoomOut', 'view.level', 'view.link', null, 'ref.addFront', 'ref.addRight', 'ref.addTop', null, 'view.xray', 'view.wire', 'view.grid', 'view.bones', 'view.boneNames', 'view.timeline', null, 'view.snap', 'view.mirrorX', ...(native ? [null, 'view.fullscreen', 'view.devtools'] : [])]],
-  ['Help', ['help.palette', 'help.shortcuts', null, 'help.about']],
+  ['Help', ['help.palette', 'help.shortcuts', 'help.keymap', null, 'help.about']],
 ];
 
 function buildMenuBar(): HTMLElement {
@@ -186,14 +187,15 @@ function renderWelcome() {
       button('Open…', () => { closeWelcome(); runCommand('file.open'); }),
       button('Demo milkshake', () => { closeWelcome(); runCommand('file.sample'); }),
     ),
-    native && recents.length ? h('div', { class: 'recents' }, h('h4', null, 'Recent'), recents.slice(0, 5).map((p) => h('button', {
-      class: 'recent-item', title: p,
+    recents.length ? h('div', { class: 'recents' }, h('h4', null, 'Recent'), recents.slice(0, 5).map((e) => h('button', {
+      class: 'recent-item', title: e.path ?? 'Kept in this browser',
       onclick: async () => {
-        const f = await native!.readFile(p);
+        const f = await openRecent(e);
         if (!f) { toast('That file is no longer there.', 'warn'); return; }
-        await loadOpened(f.name, f.path, f.data).catch((e) => reportError('Open failed', e));
+        closeWelcome();
+        await loadOpened(f.name, f.path, f.data).catch((err) => reportError('Open failed', err));
       },
-    }, p.split(/[\\/]/).pop()))) : null,
+    }, e.name))) : null,
     h('p', { class: 'muted small' }, 'Drop a .glb, .fbx, .obj, .ms3d or .tshake anywhere on this window. Ctrl+K finds any command.'),
   ));
 }
@@ -499,13 +501,22 @@ ed.on(['file', 'history'], updateTitle);
 vp.onFrame = (dt) => timeline.tick(dt);
 setInterval(renderStatus, 1000);
 
-// Autosave every 45 seconds while there are unsaved changes.
+// Autosave: a few seconds after editing stops, every 45 seconds during long sessions, and when the window is put
+// away, whenever there are unsaved changes it hasn't kept yet.
 let lastSavedDepth = -1;
-setInterval(() => {
+let autosaveTimer = 0;
+function autosaveNow() {
+  clearTimeout(autosaveTimer);
   if (!ed.dirty || ed.historyDepth === lastSavedDepth) return;
   lastSavedDepth = ed.historyDepth;
-  void autosave.write(serializeProject(ed.model));
-}, 45000);
+  void autosave.write(serializeProject(ed.model, { autosave: { savedAt: Date.now(), fileName: ed.fileName, filePath: ed.filePath } }));
+}
+ed.on(['history'], () => { clearTimeout(autosaveTimer); autosaveTimer = window.setTimeout(autosaveNow, 8000); });
+setInterval(autosaveNow, 45000);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') autosaveNow(); });
+window.addEventListener('blur', autosaveNow);
+// Saving keeps the work; a later autosave starts from there.
+ed.on(['file'], () => { if (!ed.dirty) lastSavedDepth = ed.historyDepth; });
 
 // Paste an image from the clipboard: into the active material, or behind the Front view while blocking out.
 window.addEventListener('paste', async (e) => {
@@ -574,6 +585,8 @@ native?.onRequestClose(async () => {
 if (!native) window.addEventListener('beforeunload', (e) => { if (ed.dirty) e.preventDefault(); });
 
 bindShortcuts();
+// Your own shortcuts over the built-in ones.
+applyKeymap();
 
 // Dev/test hook. Viewports need a real browser, so end-to-end checks drive the app through this.
 (window as any).__thickshake = { ed, vp, commands, emptyModel, addReference, serializeProject, parseProject, panels: { makeNormalFromBase, flipNormalGreen, packOrmImage, halveTextures, importImageFiles, makePaletteFromPixels, refreshDock, panelState, colorStore }, runCommand, setWorkspace, timeline, uvEditor, importFile, exportGLB, exportMS3D, exportOBJ, defaultExport };
@@ -590,13 +603,21 @@ vp.frameSelected(true);
 // Offer crash recovery.
 autosave.read().then(async (text) => {
   if (!text) return;
-  const ok = await modal('Recover unsaved work?', 'ThickShake found an autosave from a previous session that didn’t close cleanly.', [
+  const info = autosaveInfo(text);
+  let detail = '';
+  try {
+    const m = parseProject(text);
+    const parts = [`${m.faces.length.toLocaleString()} faces`, m.bones.length ? `${m.bones.length} joints` : '', m.clips.length ? `${m.clips.length} clip${m.clips.length === 1 ? '' : 's'}` : ''].filter(Boolean);
+    detail = ` ${info ? `"${info.fileName}", kept ${new Date(info.savedAt).toLocaleString()}` : 'It has'}: ${parts.join(', ')}.`;
+  } catch { /* the recover step reports it */ }
+  const ok = await modal('Recover unsaved work?', `ThickShake found unsaved work from a session that didn’t close cleanly.${detail}`, [
     { label: 'Discard', value: false, danger: true },
     { label: 'Recover', primary: true, value: true },
   ]);
   if (ok) {
     try {
-      ed.loadModel(parseProject(text), null, 'Recovered');
+      // Back under its own name and file, still unsaved, so Save writes it where it belongs.
+      ed.loadModel(parseProject(text), info?.filePath ?? null, info?.fileName ?? 'Recovered');
       ed.dirty = true;
       ed.emit('file');
       vp.frameSelected(true);

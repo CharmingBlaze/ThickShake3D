@@ -15,7 +15,7 @@ import { addHumanoid, autoWeights, ensureTrack, heatWeights, keyFrames, mirrorJo
 import { emptyModel, makeGroup, makeMaterial, newId, uniqueName, type Clip, type Model, type RefImage, type V2, type V3 } from '../core/types';
 import * as uv from '../core/uv';
 import { IMPORT_EXTS, importFile, mergeInto } from '../io/importer';
-import { autosave, native, openFile, pushRecent, saveFile } from '../io/platform';
+import { autosave, clearRecent, native, openFile, openRecent, pushRecent, recentFiles, saveFile } from '../io/platform';
 import { parseProject, serializeProject } from '../io/project';
 import type { ViewKind } from '../view/pane';
 import { app } from './app';
@@ -23,6 +23,7 @@ import { modal, reportError, status, toast } from './feedback';
 import { h } from './dom';
 import { openAbout, openExportDialog, openShortcuts } from './dialogs';
 import { openPalette } from './palette';
+import { openKeymapEditor } from './keymap';
 import { makeAtlas, openBakeDialog } from './gameTools';
 
 export interface Command {
@@ -74,22 +75,51 @@ export async function confirmDiscard(): Promise<boolean> {
 }
 
 export async function saveProject(forceDialog: boolean): Promise<boolean> {
-  const data = new TextEncoder().encode(serializeProject(ed.model));
+  const text = serializeProject(ed.model);
+  const data = new TextEncoder().encode(text);
   const name = /\.tshake$/.test(ed.fileName) ? ed.fileName : `${ed.fileName}.tshake`;
   const res = await saveFile({ path: forceDialog ? null : ed.filePath, defaultName: name, filters: [PROJECT_FILTER], data });
   if (!res) return false;
   ed.filePath = res.path; ed.fileName = res.name; ed.dirty = false;
-  pushRecent(res.path);
+  void pushRecent(res.path, res.name, text);
   await autosave.clear();
   ed.emit('file');
   toast(`Saved ${res.name}`, 'ok', 1800);
   return true;
 }
 
+/** Pick from the projects opened or saved lately. */
+async function openRecentDialog() {
+  const list = recentFiles();
+  if (!list.length) { toast(native ? 'No recent projects yet.' : 'No recent projects yet. Projects you open or save are kept here, in this browser.', 'info'); return; }
+  const ago = (t: number) => {
+    if (!t) return '';
+    const s = (Date.now() - t) / 1000;
+    return s < 90 ? 'just now' : s < 5400 ? `${Math.round(s / 60)} min ago` : s < 129600 ? `${Math.round(s / 3600)} h ago` : new Date(t).toLocaleDateString();
+  };
+  let chosen: (typeof list)[number] | null = null;
+  const rows = list.map((e) => h('button', {
+    class: 'recent-row', title: e.path ?? 'Kept in this browser',
+    onclick: () => { chosen = e; (document.querySelector('.modal-back footer .btn-primary') as HTMLElement | null)?.click(); },
+  }, h('strong', null, e.name), h('span', { class: 'muted small' }, [e.path ? e.path.replace(/[\\/][^\\/]*$/, '') : 'In this browser', ago(e.at)].filter(Boolean).join(' · '))));
+  const r = await modal('Open recent', h('div', { class: 'recent-list' }, rows), [
+    { label: 'Clear list', value: 'clear', danger: true },
+    { label: 'Cancel', value: 'cancel' },
+    { label: 'Open', primary: true, value: 'open', run: () => !!chosen },
+  ], { width: 460 });
+  if (r === 'clear') { clearRecent(); toast('Cleared the recent list.', 'ok'); return; }
+  if (r !== 'open' || !chosen) return;
+  if (!(await confirmDiscard())) return;
+  const f = await openRecent(chosen);
+  if (!f) { toast(`${(chosen as { name: string }).name} isn't there any more.`, 'warn'); return; }
+  await loadOpened(f.name, f.path, f.data).catch((e) => reportError('Open failed', e));
+}
+
 export async function loadOpened(name: string, path: string | null, data: ArrayBuffer) {
   if (/\.tshake$/i.test(name)) {
-    ed.loadModel(parseProject(new TextDecoder().decode(data)), path, name);
-    pushRecent(path);
+    const text = new TextDecoder().decode(data);
+    ed.loadModel(parseProject(text), path, name);
+    void pushRecent(path, name, text);
   } else {
     const model = await importFile(name, data);
     ed.loadModel(model, null, name.replace(/\.[^.]+$/, ''));
@@ -120,6 +150,13 @@ def('file.open', 'Open…', async () => {
 }, { key: 'Ctrl+O' });
 def('file.save', 'Save', () => { void saveProject(false); }, { key: 'Ctrl+S' });
 def('file.saveAs', 'Save As…', () => { void saveProject(true); }, { key: 'Ctrl+Shift+S' });
+def('file.saveCopy', 'Save a Copy…', async () => {
+  // A snapshot under another name; the project carries on as it was, unsaved changes and all.
+  const stem = ed.fileName.replace(/\.tshake$/i, '');
+  const res = await saveFile({ path: null, defaultName: `${stem} copy.tshake`, filters: [PROJECT_FILTER], data: new TextEncoder().encode(serializeProject(ed.model)) });
+  if (res) toast(`Saved a copy as ${res.name}. You're still working on ${ed.fileName}.`, 'ok');
+}, { hint: 'Save the project to another file and keep working on this one' });
+def('file.openRecent', 'Open Recent…', () => { void openRecentDialog(); }, { key: 'Ctrl+Shift+O' });
 def('file.import', 'Import into Scene…', async () => {
   const f = await openFile([{ name: '3D models', extensions: ['tshake', ...IMPORT_EXTS] }]);
   if (f) await mergeOpened(f.name, f.data);
@@ -1366,6 +1403,7 @@ animToggle('anim.ikHold', 'Hold Rotation in IK', () => ed.ikHold, (v) => { ed.ik
 // ---------- help ----------
 def('help.palette', 'Command Palette…', () => openPalette(), { key: 'Ctrl+K' });
 def('help.shortcuts', 'Keyboard Shortcuts', () => openShortcuts(), { key: 'F1' });
+def('help.keymap', 'Customize Shortcuts…', () => openKeymapEditor(), { hint: 'Change the keys for any command' });
 def('help.about', 'About ThickShake', () => openAbout());
 def('escape', 'Cancel', () => {
   if (app.vp.drawingPrim) { app.vp.removePrim(); return; }
@@ -1417,9 +1455,18 @@ function navKey(e: KeyboardEvent): boolean {
   return true;
 }
 
-export function bindShortcuts() {
-  const table = new Map<string, string>();
+const table = new Map<string, string>();
+
+/** Rebuild the key-to-command table, after shortcuts change. */
+export function rebuildShortcuts() {
+  table.clear();
   commands.forEach((c) => { if (c.key) table.set(c.key, c.id); });
+}
+
+export { comboOf };
+
+export function bindShortcuts() {
+  rebuildShortcuts();
   window.addEventListener('keydown', (e) => {
     const t = e.target as HTMLElement;
     if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || (t.tagName === 'SELECT' && !e.ctrlKey)) return;
