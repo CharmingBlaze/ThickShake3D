@@ -210,6 +210,40 @@ export function uvAtPoint(m: Model, fi: number, p: [number, number, number]): V2
   return best && best.err < 0.05 ? best.uv : null;
 }
 
+/**
+ * Copy paint from one UV layout to another: for each triangle, every pixel it covers in the new layout takes the
+ * colour from the same spot of the triangle in the old layout. Pixels within half a pixel of a triangle's edge count
+ * as covered, so no gaps show along seams. `dst` keeps whatever the triangles don't cover.
+ */
+export function remapPixels(src: Pixels, dst: Pixels, tris: { from: [V2, V2, V2]; to: [V2, V2, V2] }[]) {
+  const W = dst.width, H = dst.height;
+  for (const { from, to } of tris) {
+    const P = to.map((u) => [u[0] * W, u[1] * H]);
+    const area = (P[1][0] - P[0][0]) * (P[2][1] - P[0][1]) - (P[2][0] - P[0][0]) * (P[1][1] - P[0][1]);
+    if (Math.abs(area) < 1e-9) continue;
+    const x0 = Math.max(0, Math.floor(Math.min(P[0][0], P[1][0], P[2][0]) - 1)), x1 = Math.min(W - 1, Math.ceil(Math.max(P[0][0], P[1][0], P[2][0]) + 1));
+    const y0 = Math.max(0, Math.floor(Math.min(P[0][1], P[1][1], P[2][1]) - 1)), y1 = Math.min(H - 1, Math.ceil(Math.max(P[0][1], P[1][1], P[2][1]) + 1));
+    // Each edge's length, to measure how far outside it a pixel lies in pixels.
+    const len = [0, 1, 2].map((i) => Math.hypot(P[(i + 2) % 3][0] - P[(i + 1) % 3][0], P[(i + 2) % 3][1] - P[(i + 1) % 3][1]) || 1);
+    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+      const px = x + 0.5, py = y + 0.5;
+      const w = [0, 1, 2].map((i) => {
+        const a = P[(i + 1) % 3], b = P[(i + 2) % 3];
+        return ((b[0] - a[0]) * (py - a[1]) - (b[1] - a[1]) * (px - a[0])) / area;
+      });
+      // w[i] × twice the area ÷ the opposite edge is the distance inside that edge, in pixels.
+      if (w.some((wi, i) => (wi * Math.abs(area)) / len[i] < -0.5)) continue;
+      const c = w.map((wi) => Math.max(0, wi));
+      const s = c[0] + c[1] + c[2] || 1;
+      const u = (c[0] * from[0][0] + c[1] * from[1][0] + c[2] * from[2][0]) / s, v = (c[0] * from[0][1] + c[1] * from[1][1] + c[2] * from[2][1]) / s;
+      const [sx, sy] = uvToPixel([u, v], src.width, src.height);
+      const si = (Math.min(src.height - 1, Math.floor(sy)) * src.width + Math.min(src.width - 1, Math.floor(sx))) * 4;
+      const di = (y * W + x) * 4;
+      dst.data[di] = src.data[si]; dst.data[di + 1] = src.data[si + 1]; dst.data[di + 2] = src.data[si + 2]; dst.data[di + 3] = src.data[si + 3];
+    }
+  }
+}
+
 /** Texture coordinates to pixel coordinates, wrapping as the texture repeats. */
 export function uvToPixel(uv: V2, w: number, h: number): [number, number] {
   const u = uv[0] - Math.floor(uv[0]), v = uv[1] - Math.floor(uv[1]);

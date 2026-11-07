@@ -2,7 +2,7 @@
 import * as THREE from 'three';
 import { ed, type OpParam, type SelMode, type ToolId } from '../core/editor';
 import { KnifeTool, LoopTool, type CutHost } from './cutTools';
-import { depthKey, PenTool, widthKey, type PenBuild } from './penTool';
+import { depthKey, limbKey, PenTool, widthKey, type PenBuild } from './penTool';
 import { ExtrudeTool } from './extrudeTool';
 import { TexPaintTool, TileTool } from './surfaceTools';
 import { tileKey } from '../ui/tileEditor';
@@ -1942,10 +1942,14 @@ export class Viewports {
    */
   startPenPiece(build: PenBuild): boolean {
     // Limbs, like fingers, become their own parts, so a drawn hand keeps its fingers.
+    // Once a piece is finished its limbs' rings are panel settings too (limbKey); until then they're the tool's.
     const make = (v: Record<string, any>) => inflateParts(build.outline, build.origin, build.right, build.up, v.rings, v.sides, v.smooth, {
       depth: [0, 1, 2].map((k) => v[depthKey(k)]) as [number, number, number],
       width: [0, 1, 2].map((k) => v[widthKey(k)]) as [number, number, number],
-    }, build.limbs);
+    }, build.limbs.map((p, i) => ({
+      depth: [0, 1, 2].map((k) => v[limbKey(i, 'depth', k)] ?? p.depth[k]) as [number, number, number],
+      width: [0, 1, 2].map((k) => v[limbKey(i, 'width', k)] ?? p.width[k]) as [number, number, number],
+    })));
     const params: OpParam[] = [];
     // Top first, as they read in the panel.
     for (const k of [2, 1, 0]) {

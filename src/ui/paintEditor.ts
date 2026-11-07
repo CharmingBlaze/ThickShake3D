@@ -6,7 +6,7 @@ import { app } from './app';
 import { colorStore, openColorPicker } from './colorPicker';
 import { button, checkbox, h, numField, select, svgIcon } from './dom';
 import { status, toast } from './feedback';
-import { commitDoc, createTexture, onTexturesChanged, pushLive, setPixelated, texDoc, workingFaces, workingTexture, type TexDoc } from './textureDoc';
+import { commitDoc, createTexture, layoutForPainting, onTexturesChanged, pushLive, setPixelated, texDoc, workingFaces, workingTexture, type TexDoc } from './textureDoc';
 
 export type PaintToolId = 'pencil' | 'brush' | 'eraser' | 'fill' | 'line' | 'rect' | 'picker';
 
@@ -206,6 +206,17 @@ export class PaintEditor {
 
   frame() { const d = this.doc(); if (d) { this.fit(d); this.draw(); } }
 
+  /** Lay the working faces out as the 3D view sees them, upright and filling the texture, carrying their paint across. */
+  layOut() {
+    const d = this.doc();
+    if (!d) return;
+    const faces = workingFaces();
+    const { right, up } = app.vp.active.screenAxes();
+    layoutForPainting(d, faces, [right.x, right.y, right.z], [up.x, up.y, up.z]);
+    status(`Laid out ${faces.length === 1 ? '1 face as the view sees it' : `${faces.length} faces as the view sees them`}. Paint stays where it was on the model.`);
+    this.draw();
+  }
+
   // ---------- drawing ----------
   draw() {
     const cv = this.cv;
@@ -349,6 +360,7 @@ export class PaintEditor {
           this.fittedFor = -1;
         }, { class: t ? 'btn btn-small' : 'btn btn-small btn-primary', title: 'A new texture for the selection (or the active part), filled with its colour' }),
       ),
+      t ? button('Lay out', () => this.layOut(), { class: 'btn btn-small', title: 'Lay the selected faces (or the active part) out across the texture as the view sees them, upright, keeping their paint' }) : null,
       button('Fit', () => this.frame(), { class: 'btn btn-small', title: 'Fit the texture in the panel (F)' }),
       checkbox('Grid', this.showGrid, (v) => { this.showGrid = v; this.draw(); }, 'Pixel grid when zoomed in'),
       checkbox('UVs', this.showWire, (v) => { this.showWire = v; this.draw(); }, 'Show where the model\'s faces sit on the texture'),

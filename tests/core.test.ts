@@ -12,7 +12,7 @@ import { applyEase, applyPose, bakeClip, capturePose, copyKeys, deleteKeys, EASE
 import { deformPoints, lathe, partPrim, PARTS, inflateParts, pathLength, PEN_SECTIONS, penFrame, profileAt, quadSilhouette, resamplePath, ROUND_PROFILE, silhouette, tube } from '../src/core/organic';
 import { bezierAt, insertAnchor, nearestOnOutline, sampleOutline, type PenAnchor } from '../src/core/pen';
 import { splitOutline } from '../src/core/limbs';
-import { blendPixel, brushFootprint, floodFill, getPixel, linePixels, rectPixels, strokeLine, uvAtPoint, type Brush, type Pixels, type RGBA } from '../src/core/paint';
+import { blendPixel, brushFootprint, floodFill, getPixel, linePixels, rectPixels, remapPixels, strokeLine, uvAtPoint, type Brush, type Pixels, type RGBA } from '../src/core/paint';
 import { cellAt, cellCorners, fitTileToFace, placeTileQuad, tileAtPixel, tileCounts, tileForCell, tileOfFace, tilePixels, tileUV, type TileBlock, type TileGrid, type TilePlane } from '../src/core/tiles';
 import { addLimb, addStarter, deformPiece, fusePieces, limbFrame, radialPieces, reducePiece, twinOf, alignPieces, arrayPieces, colorsToMaterials, dropPieces, mirrorPiece, pieceBounds, scaleFigure, snapPieces } from '../src/core/blockout';
 import { bounds, dist } from '../src/core/geom';
@@ -20,7 +20,7 @@ import { applyPreset, bakeModelGradient, bakeTextureGradient, blankOrm, evenStop
 import { sampleTrack } from '../src/core/skeleton';
 import { addHumanoid, autoWeights, evalPose, heatWeights, mirrorJoints, mirrorName, mirrorWeights, paintWeight, pruneWeights, qAxisAngle, qFromEuler, qRotate, qToEuler, removeJoints, skinInto, smoothWeights, splitJoint, weightIssues } from '../src/core/skeleton';
 import { cloneModel, emptyModel, makeGroup, makeMaterial, type Gradient, type Clip, type Model, type Q, type V2, type V3 } from '../src/core/types';
-import { alignIslands, averageIslandScale, liveUnwrap, minimizeStretch, setPins, clearSeams, fitUV, packIslands, projectBox, relaxUV, seamEdges, seamsFromIslands, setSeams, setTexelDensity, smartUnwrap, stitchIslands, texelDensity, unwrap, uvIslands, uvOverlaps, uvStretch } from '../src/core/uv';
+import { alignIslands, averageIslandScale, projectScreen, liveUnwrap, minimizeStretch, setPins, clearSeams, fitUV, packIslands, projectBox, relaxUV, seamEdges, seamsFromIslands, setSeams, setTexelDensity, smartUnwrap, stitchIslands, texelDensity, unwrap, uvIslands, uvOverlaps, uvStretch } from '../src/core/uv';
 import { exportGLB } from '../src/io/gltf';
 import { exportMS3D, importMS3D } from '../src/io/ms3d';
 import { parseProject, serializeProject } from '../src/io/project';
@@ -734,6 +734,35 @@ describe('painting pixels', () => {
     expect(getPixel(img, 3, 3)).toEqual(red);
     expect(alphaAt(img, 0, 0)).toBe(0);
     expect(floodFill(img, 3, 3, red)).toBe(0);
+  });
+
+  it('carries paint across to a new UV layout', () => {
+    // A 4×4 texture: left half red, right half blue. One triangle covering it all moves to the bottom-right quarter.
+    const src = blank(4, 4);
+    for (let y = 0; y < 4; y++) for (let x = 0; x < 4; x++) blendPixel(src, x, y, x < 2 ? red : [0, 0, 255, 255]);
+    const dst = blank(4, 4);
+    remapPixels(src, dst, [
+      { from: [[0, 0], [1, 0], [0, 1]], to: [[0.5, 0.5], [1, 0.5], [0.5, 1]] },
+      { from: [[1, 0], [1, 1], [0, 1]], to: [[1, 0.5], [1, 1], [0.5, 1]] },
+    ]);
+    // The new quarter shows the whole texture shrunk: red on its left, blue on its right; the rest stays empty.
+    expect(getPixel(dst, 2, 2)).toEqual(red);
+    expect(getPixel(dst, 3, 3)).toEqual([0, 0, 255, 255]);
+    expect(alphaAt(dst, 0, 0)).toBe(0);
+  });
+
+  it('lays faces out as a view sees them, upright', () => {
+    const m = modelOf(prims.box(1, 1, 1));
+    const front = m.faces.findIndex((f) => faceNormal(m, f)[2] > 0.9);
+    projectScreen(m, [front], [1, 0, 0], [0, 1, 0]);
+    const f = m.faces[front];
+    const topLeft = f.v.findIndex((v) => m.verts[v].p[0] < 0 && m.verts[v].p[1] > 0);
+    const bottomRight = f.v.findIndex((v) => m.verts[v].p[0] > 0 && m.verts[v].p[1] < 0);
+    // Top left of the face at the top left of the texture (V runs down).
+    expect(f.uv[topLeft][0]).toBeLessThan(0.1);
+    expect(f.uv[topLeft][1]).toBeLessThan(0.1);
+    expect(f.uv[bottomRight][0]).toBeGreaterThan(0.9);
+    expect(f.uv[bottomRight][1]).toBeGreaterThan(0.9);
   });
 
   it('finds the texture coordinate under a point on a face', () => {

@@ -28,6 +28,19 @@ export function fitUV(m: Model, faces: Iterable<number>, keepAspect = true, marg
   }
 }
 
+/**
+ * Lay faces out as a view sees them, upright: U along the view's right, V down its up, then fit them to the texture.
+ * For painting, so the texture looks the way the model does on screen.
+ */
+export function projectScreen(m: Model, faces: Iterable<number>, right: V3, up: V3) {
+  const list = [...faces];
+  for (const fi of list) {
+    const f = m.faces[fi];
+    f.uv = f.v.map((i) => [dot(m.verts[i].p, right), -dot(m.verts[i].p, up)]);
+  }
+  fitUV(m, list);
+}
+
 /** Flatten along an axis direction. */
 export function projectPlanar(m: Model, faces: Iterable<number>, dir: V3) {
   const [u, v] = basis(norm(dir));

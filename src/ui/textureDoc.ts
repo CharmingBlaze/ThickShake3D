@@ -1,7 +1,10 @@
 // Textures as editable pixels, shared by the Paint and Tile workspaces: which texture a face shows, loading it into a
 // canvas, showing edits in the views as they happen, and saving them as one undo step.
 import { ed } from '../core/editor';
-import { makeMaterial, newId, uniqueName, type Material, type Model, type Texture } from '../core/types';
+import { cloneModel, makeMaterial, newId, uniqueName, type Material, type Model, type Texture, type V2, type V3 } from '../core/types';
+import { triangulateFace } from '../core/geom';
+import { remapPixels } from '../core/paint';
+import { projectScreen } from '../core/uv';
 import { liveTextures } from '../view/materialView';
 import { app } from './app';
 
@@ -103,6 +106,36 @@ export function commitDoc(d: TexDoc, label: string) {
     t.rev = (t.rev ?? 0) + 1;
   });
   notify();
+}
+
+/**
+ * Lay the faces out for painting as a view sees them, and carry their paint across so the model looks the same.
+ * One undo step. Other faces on the same texture keep their pixels, unless the new layout lands on them.
+ */
+export function layoutForPainting(d: TexDoc, faces: number[], right: V3, up: V3) {
+  const before = cloneModel(ed.model);
+  const after = cloneModel(ed.model);
+  projectScreen(after, faces, right, up);
+  const tris: { from: [V2, V2, V2]; to: [V2, V2, V2] }[] = [];
+  for (const fi of faces) {
+    const t = triangulateFace(before, before.faces[fi]);
+    for (let i = 0; i < t.length; i += 3) {
+      const c = [t[i], t[i + 1], t[i + 2]];
+      tris.push({ from: c.map((k) => before.faces[fi].uv[k]) as [V2, V2, V2], to: c.map((k) => after.faces[fi].uv[k]) as [V2, V2, V2] });
+    }
+  }
+  const out = new ImageData(new Uint8ClampedArray(d.img.data), d.w, d.h);
+  remapPixels(d.img, out, tris);
+  d.img = out;
+  d.ctx.putImageData(out, 0, 0);
+  const url = d.canvas.toDataURL('image/png');
+  d.url = url;
+  ed.transact('Lay out for painting', (m) => {
+    for (const fi of faces) m.faces[fi].uv = after.faces[fi].uv.map((u) => [u[0], u[1]] as V2);
+    const t = m.textures.find((x) => x.id === d.texId);
+    if (t) { t.url = url; t.rev = (t.rev ?? 0) + 1; }
+  });
+  pushLive(d);
 }
 
 /** Throw away unsaved pixel edits, going back to the saved image. */

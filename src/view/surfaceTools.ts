@@ -44,12 +44,15 @@ export class TexPaintTool {
     return { doc: d, px, py };
   }
 
+  /** How many screen pixels one texel covers at the mouse, measured by picking just beside it. */
+  private texelScale = 4;
+
   down(p: Pane, x: number, y: number, e: PointerEvent) {
     const hit = pick.pickFace(p, this.host.sg, x, y, false);
     if (!hit) return;
     const t = textureOfFace(ed.model, hit.face);
     if (!t) { toast('This part has no texture to paint yet. Use New texture in the panel.', 'info'); return; }
-    if (paint.tool === 'line' || paint.tool === 'rect') { status('Lines and rectangles are drawn in the texture panel; on the model, use the pencil or brush.'); return; }
+    // Lines and rectangles run straight in the texture, between where the drag starts and where it is now.
     const h = this.hitPixel(p, x, y);
     if (!h) { status('Loading the texture…'); return; }
     if (strokeBegin(h.doc, h.px, h.py, e.shiftKey, e.altKey)) { this.doc = h.doc; this.last = [h.px, h.py]; }
@@ -57,11 +60,22 @@ export class TexPaintTool {
 
   move(p: Pane, x: number, y: number) {
     this.mouse = { x, y, pane: p };
-    if (!this.doc) { this.host.invalidate(); return; }
+    if (!this.doc) {
+      // Size the brush outline: compare the texels under the mouse and a few pixels to the side.
+      const a = this.hitPixel(p, x, y), b = this.hitPixel(p, x + 6, y);
+      if (a && b && a.doc === b.doc) {
+        const d = Math.hypot(b.px - a.px, b.py - a.py);
+        if (d > 1e-6 && d < a.doc.w / 2) this.texelScale = 6 / d;
+      }
+      this.host.invalidate();
+      return;
+    }
     const h = this.hitPixel(p, x, y);
     if (!h || h.doc !== this.doc) return;
     // A big jump across the texture means the stroke crossed a UV seam: carry on from the new spot, not a line across.
-    const far = !this.last || Math.hypot(h.px - this.last[0], h.py - this.last[1]) > Math.max(12, paint.size * 4);
+    // Lines and rectangles always follow the mouse from where they started.
+    const shape = paint.tool === 'line' || paint.tool === 'rect';
+    const far = !shape && (!this.last || Math.hypot(h.px - this.last[0], h.py - this.last[1]) > Math.max(12, paint.size * 4));
     strokeMove(h.px, h.py, far);
     this.last = [h.px, h.py];
   }
@@ -76,11 +90,13 @@ export class TexPaintTool {
   draw(g: CanvasRenderingContext2D, p: Pane) {
     const m = this.mouse;
     if (!m || m.pane !== p) return;
+    // The brush at its real size on the surface under the mouse.
+    const r = paint.tool === 'fill' || paint.tool === 'picker' ? 4 : Math.max(3, (paint.size / 2) * this.texelScale);
     g.strokeStyle = paint.tool === 'eraser' ? '#ffffff' : paint.primary;
     g.lineWidth = 2;
-    g.beginPath(); g.arc(m.x, m.y, 6, 0, Math.PI * 2); g.stroke();
+    g.beginPath(); g.arc(m.x, m.y, r, 0, Math.PI * 2); g.stroke();
     g.strokeStyle = 'rgba(0,0,0,0.6)'; g.lineWidth = 1;
-    g.beginPath(); g.arc(m.x, m.y, 8, 0, Math.PI * 2); g.stroke();
+    g.beginPath(); g.arc(m.x, m.y, r + 2, 0, Math.PI * 2); g.stroke();
   }
 }
 

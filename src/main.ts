@@ -264,13 +264,29 @@ function renderOptions() {
   });
 }
 
+/** Which limb's settings the last-op panel shows, for pieces with limbs; -1 for none. */
+let shownLimb = -1;
+
 /** Live parameters of the last operation; changing one re-runs it from the same starting point. */
 function lastOpPanel(): HTMLElement | null {
   const op = ed.lastOp;
   if (!op) return null;
+  // A piece's limbs each have six settings: show one limb's at a time, chosen from a list, so the panel stays small.
+  const limbOf = (key: string) => { const mt = /^limb(\d+)/.exec(key); return mt ? +mt[1] : -1; };
+  const limbCount = op.params.reduce((n, p) => Math.max(n, limbOf(p.key) + 1), 0);
+  if (shownLimb >= limbCount) shownLimb = -1;
+  const shown = op.params.filter((p) => limbOf(p.key) < 0 || limbOf(p.key) === shownLimb);
+  const limbPicker = limbCount
+    ? h('label', { class: 'check' }, h('span', null, 'Limb'), h('select', {
+      class: 'field-select', title: 'Show one limb\'s ring settings',
+      // Let go of the list first: a panel doesn't redraw while one of its fields has focus.
+      onchange: (e: Event) => { const s = e.target as HTMLSelectElement; shownLimb = +s.value; s.blur(); renderInto(lastOpHost, () => lastOpPanel()); },
+    }, [h('option', { value: '-1', selected: shownLimb < 0 }, 'None'), ...Array.from({ length: limbCount }, (_, i) => h('option', { value: String(i), selected: shownLimb === i }, `Limb ${i + 1}`))]))
+    : null;
   return h('div', { class: 'lastop', 'aria-label': `Adjust ${op.label}` },
     h('span', { class: 'lastop-title' }, op.label),
-    op.params.map((p) => {
+    limbPicker,
+    shown.map((p) => {
       if (p.type === 'bool') {
         return h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: p.value, onchange: (e: Event) => ed.adjustLastOp(p.key, (e.target as HTMLInputElement).checked) }), h('span', null, p.label));
       }

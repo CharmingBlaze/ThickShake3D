@@ -40,6 +40,8 @@ export interface PenHost {
 /** The operation's parameter keys for each ring's depth and width. */
 export const depthKey = (k: number) => `depth${RING_NAMES[k]}`;
 export const widthKey = (k: number) => `width${RING_NAMES[k]}`;
+/** A finished piece's limb ring settings, in the panel: limb i's depth or width at its root, middle or tip. */
+export const limbKey = (i: number, axis: 'depth' | 'width', k: number) => `limb${i}${axis}${k}`;
 
 /** A point on the outline. Smooth points keep their two handles in line. */
 interface PenPoint extends PenAnchor { smooth: boolean }
@@ -523,9 +525,29 @@ export class PenTool {
    * Enter, Space, a double-click or a right click. On an open outline it closes it, building the piece to shape
    * with the rings; once it's being shaped, it finishes the piece.
    */
+  /**
+   * Put each limb's ring settings in the panel beside the body's, so they stay adjustable after the piece is
+   * finished. Depths are shown as shares of the drawn width, as the handles set them.
+   */
+  private publishLimbs() {
+    const op = ed.lastOp;
+    if (!this.live || !this.build || !op) return;
+    const n = splitOutline(this.build.outline).limbs.length;
+    if (!n) return;
+    const names = ['root', 'middle', 'tip'];
+    for (let i = 0; i < n; i++) {
+      const lp = this.limbProfile(i);
+      for (const k of [2, 1, 0]) {
+        op.params.push({ key: limbKey(i, 'width', k), label: `Limb ${i + 1} ${names[k]} width`, type: 'number', value: lp.width[k], min: 0.05, max: 4, step: 0.05 });
+        op.params.push({ key: limbKey(i, 'depth', k), label: `Limb ${i + 1} ${names[k]} depth`, type: 'number', value: lp.depth[k], min: 0.05, max: 4, step: 0.05 });
+      }
+    }
+    ed.emit('history');
+  }
+
   finish() {
     this.checkStale();
-    if (this.fixed) { this.reset(); this.hint(); return; }
+    if (this.fixed) { this.publishLimbs(); this.reset(); this.hint(); return; }
     if (this.points.length < 3) { if (this.points.length) toast('Place at least three points to make a shape.', 'info'); return; }
     if (!this.closed) {
       this.remember();
@@ -537,7 +559,8 @@ export class PenTool {
       return;
     }
     if (!this.live) { toast('That outline is too small to inflate.', 'info'); return; }
-    // The piece stays, and the panel keeps its settings adjustable.
+    // The piece stays, and the panel keeps its settings adjustable, the limbs' included.
+    this.publishLimbs();
     this.reset();
     this.hint();
   }
