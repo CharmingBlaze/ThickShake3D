@@ -30,7 +30,7 @@ const GIZMO = 80; // pixels
 const VIEWPORT_KEY = 'thickshake.viewports';
 
 type Drag =
-  | { kind: 'orbit' | 'bank' | 'pan' | 'panGround' | 'panVertical' | 'zoom'; pane: Pane; x: number; y: number }
+  | { kind: 'orbit' | 'bank' | 'pan' | 'panGround' | 'panVertical' | 'zoom'; pane: Pane; x: number; y: number; pivot?: THREE.Vector3 }
   | { kind: 'box'; pane: Pane; x0: number; y0: number; x1: number; y1: number; add: boolean; sub: boolean }
   | { kind: 'transform'; pane: Pane; handle: Handle; x0: number; y0: number; mode: 'move' | 'rotate' | 'scale'; center: THREE.Vector3; orig: Map<number, V3>; mirror: Map<number, number>; boneOrig?: Map<number, V3>; boneMirror?: Map<number, number>; poseBase?: PoseBase; startAngle?: number }
   | { kind: 'prim'; pane: Pane; s: PrimSession; x0: number; y0: number; made: boolean }
@@ -1342,8 +1342,12 @@ export class Viewports {
       if (e.button === 2 && this.extrudeTool.active) { this.extrudeTool.cancel(); return; }
       if (e.button === 1) { this.drag = { kind: 'pan', pane: p, x, y }; return; }
       if (e.button === 2 && (this.drag?.kind === 'transform' || this.drag?.kind === 'ik' || this.drag?.kind === 'sculpt')) { this.cancelDrag(); return; }
-      if (e.altKey && (e.button === 0 || e.button === 2)) { this.drag = { kind: altDragKind(p, e), pane: p, x, y }; return; }
-      if (e.button === 2) { this.drag = { kind: p.isOrtho ? 'pan' : 'orbit', pane: p, x, y }; return; }
+      if (e.altKey && (e.button === 0 || e.button === 2)) {
+        const kind = altDragKind(p, e);
+        this.drag = { kind, pane: p, x, y, pivot: kind === 'orbit' ? this.orbitPivot(p, x, y) : undefined };
+        return;
+      }
+      if (e.button === 2) { this.drag = p.isOrtho ? { kind: 'pan', pane: p, x, y } : { kind: 'orbit', pane: p, x, y, pivot: this.orbitPivot(p, x, y) }; return; }
       if (e.button !== 0) return;
       if (ed.refEdit && this.startRefDrag(p, x, y)) return;
       this.toolDown(p, x, y, e);
@@ -1373,7 +1377,7 @@ export class Viewports {
         return;
       }
       switch (d.kind) {
-        case 'orbit': d.pane.orbit(x - d.x, y - d.y); d.x = x; d.y = y; break;
+        case 'orbit': d.pane.orbit(x - d.x, y - d.y, d.pivot); d.x = x; d.y = y; break;
         case 'pan': d.pane.pan(x - d.x, y - d.y); d.x = x; d.y = y; break;
         case 'bank': d.pane.bank(x - d.x); d.x = x; d.y = y; break;
         case 'panGround': d.pane.panGround(x - d.x, y - d.y); d.x = x; d.y = y; break;
@@ -2433,6 +2437,25 @@ export class Viewports {
   }
 
   // ---------- framing ----------
+  /**
+   * What the view turns around: the model under the mouse, or else the selection's centre if it's in view, or else
+   * the view's own centre.
+   */
+  private orbitPivot(p: Pane, x: number, y: number): THREE.Vector3 | undefined {
+    if (p.isOrtho) return undefined;
+    const hit = pick.pickFace(p, this.sg, x, y, false);
+    if (hit) return hit.point.clone();
+    const P = ed.displayPositions();
+    const sel = ed.mode === 'bone' ? [] : [...ed.selectedVertexSet()];
+    if (!sel.length) return undefined;
+    const c = new THREE.Vector3();
+    for (const v of sel) c.add(new THREE.Vector3(P[v * 3], P[v * 3 + 1], P[v * 3 + 2]));
+    c.divideScalar(sel.length);
+    const s = p.project(c.x, c.y, c.z);
+    const onScreen = s.w > 0 && s.x >= p.x && s.x <= p.x + p.w && s.y >= p.y && s.y <= p.y + p.h;
+    return onScreen ? c : undefined;
+  }
+
   frameSelected(all = false) {
     const pts: V3[] = [];
     const P = ed.displayPositions();

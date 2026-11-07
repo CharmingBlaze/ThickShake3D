@@ -145,9 +145,22 @@ export class Pane {
     return Math.pow(10, Math.round(Math.log10(Math.max(1e-4, raw))));
   }
 
-  orbit(dx: number, dy: number) {
+  /**
+   * Turn the view by a mouse movement. With a `pivot`, the camera swings around that point instead of the view's
+   * centre, so the point stays put on screen: the whole camera rig, centre included, turns around it.
+   */
+  orbit(dx: number, dy: number, pivot?: THREE.Vector3) {
+    const yaw0 = this.yaw, pitch0 = this.pitch;
     this.yaw -= dx * 0.008;
     this.pitch = Math.max(-1.55, Math.min(1.55, this.pitch + dy * 0.008));
+    if (pivot && this.kind === 'persp') {
+      const dirAt = (yaw: number, pitch: number) => new THREE.Vector3(Math.cos(pitch) * Math.sin(yaw), Math.sin(pitch), Math.cos(pitch) * Math.cos(yaw));
+      // Tilt about the camera's right axis, then turn about the world's up axis: the same turn the view itself makes.
+      const tilt = new THREE.Quaternion().setFromUnitVectors(dirAt(yaw0, pitch0), dirAt(yaw0, this.pitch));
+      const turn = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), this.yaw - yaw0);
+      const q = turn.multiply(tilt);
+      this.target.sub(pivot).applyQuaternion(q).add(pivot);
+    }
     this.update();
   }
   pan(dx: number, dy: number) {

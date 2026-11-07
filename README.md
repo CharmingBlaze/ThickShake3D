@@ -39,7 +39,7 @@ npm run e2e
 
 | Action | Input |
 | --- | --- |
-| Orbit | Right drag, or Alt + left drag |
+| Orbit | Right drag, or Alt + left drag. It turns around the part of the model under the mouse, or the selection when the mouse is over empty space |
 | Bank (perspective) | Alt + right drag; Shift + G levels the view |
 | Pan | Middle drag, or Alt + drag in an orthographic view |
 | Pan along the ground (perspective) | Shift + Alt + left drag |
