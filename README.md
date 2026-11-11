@@ -128,7 +128,11 @@ The **Bend** tool (Shift+W, Mesh > Bend, or Bend in the side panel's mode tools)
 
 Two kinds, as in Blender:
 
-- **Symmetry (Mirror X, Shift+X):** edit one side and the other follows: moves, sculpting, weight painting, blockout pieces and new faces.
+- **Symmetry (Mirror X, Shift+X):** edit one side and the other follows: moves, welds, sculpting, weight painting, blockout pieces and new faces, and these tools:
+  - *Bend:* the twin across X bends as a mirror image; a faint dashed curve shows it.
+  - *Subdivide, Smooth subdivide, Bevel, Inset, Poke, Dissolve, Solidify, Triangulate, To quads, Flip, Fill holes, Smooth and Flat shading, and Delete:* the matching selection on the other side is added first, so both sides change alike. Subdivide's Fractal roughens both sides as mirror images.
+  - Tools that join things (Merge, Bridge, Make face) or push one way (Extrude) work on what's selected only, since doing both sides at once would join or push them together.
+  - It needs the model to be symmetric where you work: points without a twin across X are left alone.
 - **Live mirror (the Mirror card in the Scene panel):** with Mirror on, or on a part that has one, press Add Mirror. The part shows mirrored without the copy being real, so you model one half. As Blender's Mirror modifier:
   - *Axis* X, Y and Z, in any mix.
   - *Bisect* cuts the mesh at the mirror plane first, dropping what's past it; *Flip* keeps the other side.

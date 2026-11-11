@@ -29,6 +29,7 @@ import { bevelEdges, bridgeLoops, checkerFaces, extrudeEdges, insetRegion, circl
 import { mergeInto } from '../src/io/importer';
 import { applyAllMirrors, clipToMirror, MIRROR_DEFAULTS, mirrorCopies } from '../src/core/mirror';
 import { applyBend, bendSetup, curvePoints, selectionPieces, straightShape, toLocal, toWorld } from '../src/core/bend';
+import { isSymmetric, mirrorSelection } from '../src/core/symmetry';
 import { exportMS3D, importMS3D } from '../src/io/ms3d';
 import { parseProject, serializeProject } from '../src/io/project';
 
@@ -3006,5 +3007,73 @@ describe('subdivide, as Blender', () => {
       const w = m.verts[v].w!;
       expect(w.reduce((s, x) => s + x[1], 0)).toBeCloseTo(1, 6);
     }
+  });
+});
+
+describe('symmetry for tools', () => {
+  // A box two segments wide, so it has a centre line, and every vertex a twin across X.
+  const symBox = () => modelOf(prims.box(2, 2, 2, 2));
+  const facesOn = (m: Model, side: 1 | -1) => new Set([...m.faces.keys()].filter((fi) => m.faces[fi].v.every((v) => m.verts[v].p[0] * side > 1e-6)));
+
+  it('finds the matching selection on the other side', () => {
+    const m = symBox();
+    expect(isSymmetric(m)).toBe(true);
+    const right = facesOn(m, 1);
+    const s = mirrorSelection(m, { verts: new Set(), edges: new Set(), faces: right });
+    expect(s.faces.size).toBe(right.size * 2);
+    const left = facesOn(m, -1);
+    for (const fi of left) expect(s.faces.has(fi)).toBe(true);
+    const e = [...right].flatMap((fi) => m.faces[fi].v.map((a, i, v) => edgeKey(a, v[(i + 1) % v.length])));
+    const se = mirrorSelection(m, { verts: new Set(), edges: new Set(e), faces: new Set() });
+    expect(se.edges.size).toBe(new Set(e).size * 2);
+  });
+
+  it('roughens both sides alike with fractal and symmetry', () => {
+    const m = symBox();
+    const edges = new Set<string>();
+    for (const f of m.faces) f.v.forEach((a, i) => edges.add(edgeKey(a, f.v[(i + 1) % f.v.length])));
+    subdivideCuts(m, edges, { cuts: 2, smoothness: 0.5, fractal: 1, alongNormal: 0.3, seed: 7, mirrorX: true });
+    expect(isSymmetric(m)).toBe(true);
+    const n = modelOf(prims.box(2, 2, 2, 2));
+    subdivideCuts(n, edges, { cuts: 2, smoothness: 0.5, fractal: 1, alongNormal: 0.3, seed: 7 });
+    expect(isSymmetric(n)).toBe(false);
+  });
+
+  it('bends the twin side as a mirror image', () => {
+    const m = modelOf(prims.cylinder(0.2, 0.2, 2, 8, 6));
+    // A second, mirrored column on the other side of X.
+    const n = m.verts.length;
+    m.verts.forEach((v) => { v.p = [v.p[0] + 1, v.p[1], v.p[2]]; });
+    m.verts.slice(0, n).forEach((v) => m.verts.push({ p: [-v.p[0], v.p[1], v.p[2]] }));
+    m.faces.slice().forEach((f) => m.faces.push({ ...f, v: f.v.map((i) => i + n).reverse(), uv: [...f.uv].reverse() }));
+    expect(isSymmetric(m)).toBe(true);
+    const right = new Set([...Array(n).keys()]);
+    const s = bendSetup(m, right, { mirrorX: true });
+    expect(s.mirror.length).toBe(n);
+    const sh = straightShape(); sh.pts[3] = [0.6, 0.4, 0]; sh.pts[2] = [0.6, 0.2, 0]; sh.twist = 30; sh.endScale = 0.4;
+    applyBend(m, s, sh);
+    expect(isSymmetric(m)).toBe(true);
+    // Without symmetry, only the selected side moves.
+    const m2 = modelOf(prims.cylinder(0.2, 0.2, 2, 8, 6));
+    m2.verts.forEach((v) => { v.p = [v.p[0] + 1, v.p[1], v.p[2]]; });
+    m2.verts.slice(0, n).forEach((v) => m2.verts.push({ p: [-v.p[0], v.p[1], v.p[2]] }));
+    const s2 = bendSetup(m2, right);
+    expect(s2.mirror.length).toBe(0);
+    applyBend(m2, s2, sh);
+    expect(isSymmetric(m2)).toBe(false);
+  });
+
+  it('insets separate patches each by itself, so mirrored patches push out on their own sides', () => {
+    const m = symBox();
+    // The outer face on each side: x = +1 and x = -1.
+    const outer = (side: number) => [...m.faces.keys()].filter((fi) => m.faces[fi].v.every((v) => Math.abs(m.verts[v].p[0] - side) < 1e-6));
+    const pick = mirrorSelection(m, { verts: new Set(), edges: new Set(), faces: new Set([outer(1)[0]]) }).faces;
+    expect(pick.size).toBe(2);
+    expect(outer(-1).some((fi) => pick.has(fi))).toBe(true);
+    const maxX = Math.max(...m.verts.map((v) => v.p[0]));
+    insetRegion(m, pick, { thickness: 0.1, depth: 0.3, individual: false, even: true });
+    expect(isSymmetric(m)).toBe(true);
+    expect(Math.max(...m.verts.map((v) => v.p[0]))).toBeCloseTo(maxX + 0.3, 5);
+    expect(Math.min(...m.verts.map((v) => v.p[0]))).toBeCloseTo(-maxX - 0.3, 5);
   });
 });

@@ -970,6 +970,14 @@ export function insetRegion(m: Model, faces: Set<number>, o: InsetOptions): numb
     return inner;
   }
   if (!faces.size || (o.thickness === 0 && o.depth === 0)) return [...faces];
+  // Separate patches each inset by themselves, with their own normal for Depth, as Blender does: two mirrored
+  // patches push out on their own sides instead of one shared way.
+  const regs = regions(m, faces);
+  if (regs.length > 1) {
+    const inner: number[] = [];
+    for (const r of regs) inner.push(...insetRegion(m, new Set(r), o));
+    return inner;
+  }
   // The region's outline: directed edges of its faces whose reverse isn't in it.
   const owner = new Map<string, number>();
   for (const fi of faces) { const f = m.faces[fi]; f.v.forEach((a, i) => owner.set(`${a}>${f.v[(i + 1) % f.v.length]}`, fi)); }
@@ -1041,6 +1049,8 @@ export interface SubdivideOpts {
   /** 0 lets roughness go any way; 1 keeps it along the surface's normal. */
   alongNormal: number;
   seed: number;
+  /** Roughen both sides of X alike, for symmetric models. */
+  mirrorX?: boolean;
 }
 
 /** A small, repeatable random number source. */
@@ -1074,8 +1084,10 @@ export function subdivideCuts(m: Model, edges: Set<string>, o: SubdivideOpts): {
   for (let i = 0; i < vn.length; i++) vn[i] = len(vn[i]) > 1e-12 ? norm(vn[i]) : [0, 1, 0];
 
   const added: number[] = [];
-  /** A point over corners `cs` with weights `ws`: in between, rounded out by smoothness, roughened by fractal. */
-  const place = (cs: number[], ws: number[], size: number): V3 => {
+  /** New points to roughen once they're all made, with the normal and size to roughen them by. */
+  const rough: { v: number; nrm: V3; size: number }[] = [];
+  /** A point over corners `cs` with weights `ws`: in between, rounded out by smoothness. */
+  const place = (cs: number[], ws: number[], size: number): { p: V3; nrm: V3 } => {
     const p: V3 = [0, 0, 0];
     cs.forEach((c, i) => { const q = m.verts[c].p; p[0] += q[0] * ws[i]; p[1] += q[1] * ws[i]; p[2] += q[2] * ws[i]; });
     const ph: V3 = [0, 0, 0];
@@ -1088,25 +1100,24 @@ export function subdivideCuts(m: Model, edges: Set<string>, o: SubdivideOpts): {
     });
     const s = o.smoothness;
     const out: V3 = [p[0] + (ph[0] - p[0]) * s, p[1] + (ph[1] - p[1]) * s, p[2] + (ph[2] - p[2]) * s];
-    if (o.fractal) {
-      const nn: V3 = len(nrm) > 1e-12 ? norm(nrm) : [0, 1, 0];
-      // A random way, leaning toward the normal as Along Normal rises, scaled to the piece.
-      let r: V3 = [rand() * 2 - 1, rand() * 2 - 1, rand() * 2 - 1];
-      r = len(r) > 1e-9 ? norm(r) : nn;
-      const k = rand() * 2 - 1;
-      const a = Math.min(1, Math.max(0, o.alongNormal));
-      const d: V3 = [r[0] * (1 - a) + nn[0] * k * a, r[1] * (1 - a) + nn[1] * k * a, r[2] * (1 - a) + nn[2] * k * a];
-      const amt = o.fractal * size * 0.25;
-      out[0] += d[0] * amt; out[1] += d[1] * amt; out[2] += d[2] * amt;
-    }
-    return out;
+    return { p: out, nrm: len(nrm) > 1e-12 ? norm(nrm) : [0, 1, 0] };
   };
   const addVert = (cs: number[], ws: number[], size: number) => {
-    const p = place(cs, ws, size);
+    const { p, nrm } = place(cs, ws, size);
     const w = blendWeights(cs.map((c) => m.verts[c]), ws);
     m.verts.push(w ? { p, w } : { p });
     added.push(m.verts.length - 1);
+    if (o.fractal) rough.push({ v: m.verts.length - 1, nrm, size });
     return m.verts.length - 1;
+  };
+  /** A random nudge, leaning toward the normal as Along Normal rises, scaled to the piece. */
+  const nudge = (nn: V3, size: number): V3 => {
+    let r: V3 = [rand() * 2 - 1, rand() * 2 - 1, rand() * 2 - 1];
+    r = len(r) > 1e-9 ? norm(r) : nn;
+    const k = rand() * 2 - 1;
+    const a = Math.min(1, Math.max(0, o.alongNormal));
+    const amt = o.fractal * size * 0.25;
+    return [(r[0] * (1 - a) + nn[0] * k * a) * amt, (r[1] * (1 - a) + nn[1] * k * a) * amt, (r[2] * (1 - a) + nn[2] * k * a) * amt];
   };
 
   // The new points along each cut edge, from its lower-numbered end to the other.
@@ -1222,5 +1233,25 @@ export function subdivideCuts(m: Model, edges: Set<string>, o: SubdivideOpts): {
     for (let q = start; q < out.length; q++) made.push(q);
   }
   m.faces = out;
+  // Roughen the new points. With symmetry, a point's twin across X takes the mirror of its nudge, and points on the
+  // centre line stay on it.
+  if (o.fractal && rough.length) {
+    const pkey = (q: V3) => `${Math.round(q[0] * 1e5)},${Math.round(q[1] * 1e5)},${Math.round(q[2] * 1e5)}`;
+    const at = new Map<string, number>();
+    for (const r of rough) at.set(pkey(m.verts[r.v].p), r.v);
+    const offs = new Map<number, V3>();
+    for (const r of rough) {
+      const q = m.verts[r.v].p;
+      let off: V3 | null = null;
+      if (o.mirrorX) {
+        const tw = at.get(pkey([-q[0], q[1], q[2]]));
+        const t = tw !== undefined && tw !== r.v ? offs.get(tw) : undefined;
+        if (t) off = [-t[0], t[1], t[2]];
+      }
+      if (!off) { off = nudge(r.nrm, r.size); if (o.mirrorX && Math.abs(q[0]) < 1e-6) off[0] = 0; }
+      offs.set(r.v, off);
+    }
+    offs.forEach((d, v) => { const q = m.verts[v].p; m.verts[v].p = [q[0] + d[0], q[1] + d[1], q[2] + d[2]]; });
+  }
   return { faces: made, verts: added, chains };
 }

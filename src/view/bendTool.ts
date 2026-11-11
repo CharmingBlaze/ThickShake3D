@@ -45,11 +45,16 @@ export class BendTool {
     this.host.invalidate();
   }
 
+  /** Whether the curve was set up with symmetry on: turning it on or off starts a fresh one. */
+  private mirrored = false;
+
   private ensure() {
-    if (!this.stale) return;
+    if (!this.stale && this.mirrored === ed.mirrorX) return;
+    if (!this.stale) this.shape = straightShape();
     this.stale = false;
+    this.mirrored = ed.mirrorX;
     const verts = ed.selectedVertexSet();
-    this.setup = verts.size > 1 ? bendSetup(ed.model, verts, { axis: this.opts.axis, each: this.opts.each }) : null;
+    this.setup = verts.size > 1 ? bendSetup(ed.model, verts, { axis: this.opts.axis, each: this.opts.each, mirrorX: ed.mirrorX }) : null;
     if (this.setup && !this.setup.pieces.length) this.setup = null;
   }
 
@@ -183,6 +188,14 @@ export class BendTool {
     this.ensure();
     if (!this.setup) return;
     const setup = this.setup;
+    if (setup.mirror.length) {
+      g.strokeStyle = 'rgba(76,195,242,.4)'; g.lineWidth = 1.5; g.setLineDash([5, 4]);
+      for (const piece of setup.pieces) {
+        const mp = curvePoints(setup, piece, this.shape, 40).map((w) => p.project(-w[0], w[1], w[2]));
+        g.beginPath(); mp.forEach((s, i) => (i ? g.lineTo(s.x, s.y) : g.moveTo(s.x, s.y))); g.stroke();
+      }
+      g.setLineDash([]);
+    }
     setup.pieces.forEach((piece, pi) => {
       const pts = curvePoints(setup, piece, this.shape, 40).map((w) => p.project(w[0], w[1], w[2]));
       g.strokeStyle = CURVE; g.lineWidth = 2;

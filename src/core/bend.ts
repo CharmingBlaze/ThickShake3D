@@ -7,6 +7,7 @@
 // connected part of the selection gets the same curve in its own terms, scaled to its own length: bend one finger's
 // curve and all the selected fingers bend alike.
 import * as THREE from 'three';
+import { mirrorVerts } from './symmetry';
 import type { Model, V3 } from './types';
 
 export type BendAxis = 'auto' | 'x' | 'y' | 'z';
@@ -33,6 +34,8 @@ export interface BendSetup {
   /** The rest line's axis, 0 X, 1 Y, 2 Z; U and V are the next two, so A, U, V is right-handed. */
   axis: 0 | 1 | 2;
   pieces: BendPiece[];
+  /** With symmetry: each selected vertex and its twin across X, which follows it mirrored. */
+  mirror: [number, number][];
 }
 
 export const straightShape = (): BendShape => ({ pts: [[0, 0, 0], [1 / 3, 0, 0], [2 / 3, 0, 0], [1, 0, 0]], twist: 0, startScale: 1, endScale: 1 });
@@ -66,7 +69,7 @@ export function selectionPieces(m: Model, verts: Set<number>): number[][] {
 }
 
 /** Get the selection ready to bend: its pieces, each with its rest line along the chosen axis. */
-export function bendSetup(m: Model, verts: Set<number>, opts: { axis?: BendAxis; each?: boolean } = {}): BendSetup {
+export function bendSetup(m: Model, verts: Set<number>, opts: { axis?: BendAxis; each?: boolean; mirrorX?: boolean } = {}): BendSetup {
   const all = [...verts].filter((v) => m.verts[v]);
   // The axis the selection is longest along, unless one is chosen.
   let axis: 0 | 1 | 2 = 1;
@@ -91,7 +94,13 @@ export function bendSetup(m: Model, verts: Set<number>, opts: { axis?: BendAxis;
     origin[w] = (lo[w] + hi[w]) / 2;
     pieces.push({ verts: list, base: list.map((v) => [...m.verts[v].p] as V3), origin, length });
   }
-  return { axis, pieces };
+  // Twins on the other side that aren't selected themselves follow, mirrored.
+  const mirror: [number, number][] = [];
+  if (opts.mirrorX) {
+    const sel = new Set(all);
+    mirrorVerts(m).forEach((o, v) => { if (sel.has(v) && o !== v && !sel.has(o)) mirror.push([v, o]); });
+  }
+  return { axis, pieces, mirror };
 }
 
 /** A curve point from a piece's own terms to the world. */
@@ -166,4 +175,5 @@ export function applyBend(m: Model, setup: BendSetup, shape: BendShape) {
       m.verts[v].p = [p.x, p.y, p.z];
     });
   }
+  for (const [v, o] of setup.mirror) { const p = m.verts[v].p; m.verts[o].p = [-p[0], p[1], p[2]]; }
 }

@@ -10,6 +10,7 @@ import { ed, type SelMode, type ToolId, type Workspace } from '../core/editor';
 import { bounds, edgeFaces, edgeKey, faceNormal, parseEdge } from '../core/geom';
 import * as ops from '../core/ops';
 import * as mt from '../core/meshtools';
+import { mirrorSelection } from '../core/symmetry';
 import * as prims from '../core/primitives';
 import { buildSample } from '../core/sample';
 import { addHumanoid, autoWeights, ensureTrack, heatWeights, keyFrames, mirrorJoints, mirrorWeights, pruneWeights, removeJoints, sampleTrack, setKey, smoothWeights, splitJoint, weightIssues } from '../core/skeleton';
@@ -43,10 +44,27 @@ const def = (id: string, label: string, run: Command['run'], extra: Partial<Comm
   commands.set(id, { id, label, run, ...extra });
 };
 
+/** Mesh tools that work on each face, edge or patch by itself: with Mirror X on, they run on the other side's
+ *  matching selection too, so a symmetric model stays symmetric. Tools that join things (merge, bridge, make face)
+ *  or share one direction (extrude) aren't here, since they'd join or push the two sides together. */
+const MIRRORED_TOOLS = new Set([
+  'mesh.subdivideCuts', 'mesh.subdivide', 'mesh.bevel', 'mesh.inset', 'mesh.poke', 'mesh.dissolve', 'mesh.solidify',
+  'mesh.triangulate', 'mesh.quadify', 'mesh.flip', 'mesh.fillHoles', 'mesh.smoothShade', 'mesh.flatShade', 'edit.delete',
+]);
+
+/** Add the other side's matching vertices, edges and faces to the selection. */
+function mirrorTheSelection() {
+  const s = mirrorSelection(ed.model, { verts: ed.selVerts, edges: ed.selEdges, faces: ed.selFaces });
+  const grew = s.verts.size !== ed.selVerts.size || s.edges.size !== ed.selEdges.size || s.faces.size !== ed.selFaces.size;
+  ed.selVerts = s.verts; ed.selEdges = s.edges; ed.selFaces = s.faces;
+  if (grew) ed.emit('selection');
+}
+
 export function runCommand(id: string) {
   const c = commands.get(id);
   if (!c) return;
   if (c.enabled && !c.enabled()) return;
+  if (ed.mirrorX && ed.mode !== 'bone' && MIRRORED_TOOLS.has(id)) mirrorTheSelection();
   if (ed.testPose && id.startsWith('anim.')) { toast('Turn off Test Pose to animate.', 'info'); return; }
   try {
     // Most commands finish a primitive that's still being drawn before they run.
@@ -519,6 +537,7 @@ def('mesh.subdivideCuts', 'Subdivide', () => {
   }
   if (!need(edges.size > 0, 'Select faces or edges to subdivide.')) return;
   const mode = ed.mode;
+  const mirrorX = ed.mirrorX;
   ed.runOp('Subdivide', [
     { key: 'cuts', label: 'Number of cuts', type: 'number', value: 1, min: 1, max: 32, step: 1 },
     { key: 'smoothness', label: 'Smoothness', type: 'number', value: 0, min: 0, max: 2, step: 0.05 },
@@ -526,7 +545,7 @@ def('mesh.subdivideCuts', 'Subdivide', () => {
     { key: 'alongNormal', label: 'Along normal', type: 'number', value: 0, min: 0, max: 1, step: 0.05 },
     { key: 'seed', label: 'Random seed', type: 'number', value: 0, min: 0, max: 10000, step: 1 },
   ], (m, v) => {
-    const r = mt.subdivideCuts(m, edges, { cuts: v.cuts, smoothness: v.smoothness, fractal: v.fractal, alongNormal: v.alongNormal, seed: v.seed });
+    const r = mt.subdivideCuts(m, edges, { cuts: v.cuts, smoothness: v.smoothness, fractal: v.fractal, alongNormal: v.alongNormal, seed: v.seed, mirrorX });
     ed.clearSelection();
     ed.mode = mode;
     // What was cut stays selected, in pieces, as in Blender.
