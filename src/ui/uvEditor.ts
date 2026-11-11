@@ -75,7 +75,7 @@ export class UVEditor {
       h('div', { class: 'seg' }, modeBtn('vertex', 'Vertex', '1'), modeBtn('edge', 'Edge', '2'), modeBtn('face', 'Face', '3'), modeBtn('island', 'Island', '4')),
       h('span', { class: 'tl-sep' }),
       button('Auto Unwrap', () => runCommand('uv.unwrap'), { class: 'btn btn-primary btn-small', title: 'One click, no seams to mark (U)' }),
-      menuButton('More', ['uv.smart', null, 'uv.box', 'uv.planarView', 'uv.cylinder', 'uv.sphere', null, 'uv.markSeam', 'uv.clearSeam', 'uv.seamsFromIslands', 'uv.clearAllSeams']),
+      menuButton('More', ['uv.smart', null, 'uv.box', 'uv.planarView', 'uv.cylinder', 'uv.sphere', null, 'uv.copyMirror', null, 'uv.markSeam', 'uv.clearSeam', 'uv.seamsFromIslands', 'uv.clearAllSeams']),
       menuButton('Pins', ['uv.pin', 'uv.unpin', null, 'uv.live', 'uv.sticky']),
       menuButton('Arrange', ['uv.pack', 'uv.fit', 'uv.minimize', 'uv.average', 'uv.alignIslands', 'uv.density', null, 'uv.stitch', 'uv.weld', 'uv.relax', null, 'uv.alignLeft', 'uv.alignRight', 'uv.alignTop', 'uv.alignBottom', null, 'uv.flipU', 'uv.flipV', 'uv.rot90']),
       menuButton('View', ['uv.frame', 'uv.frameAll', null, 'uv.showImage', 'uv.showGrid', 'uv.showStretch', 'uv.showOverlap', 'uv.selectOverlaps', null, 'uv.snap', null, 'uv.exportLayout']),

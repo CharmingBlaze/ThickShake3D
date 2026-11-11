@@ -29,7 +29,7 @@ import { bevelEdges, bridgeLoops, checkerFaces, extrudeEdges, insetRegion, circl
 import { mergeInto } from '../src/io/importer';
 import { applyAllMirrors, clipToMirror, MIRROR_DEFAULTS, mirrorCopies } from '../src/core/mirror';
 import { applyBend, bendSetup, curvePoints, selectionPieces, straightShape, toLocal, toWorld } from '../src/core/bend';
-import { isSymmetric, mirrorSelection } from '../src/core/symmetry';
+import { copyMirroredUVs, isSymmetric, mirrorFaces, mirrorGroups, mirrorSelection, mirrorVerts } from '../src/core/symmetry';
 import { exportMS3D, importMS3D } from '../src/io/ms3d';
 import { parseProject, serializeProject } from '../src/io/project';
 
@@ -3075,5 +3075,67 @@ describe('symmetry for tools', () => {
     expect(isSymmetric(m)).toBe(true);
     expect(Math.max(...m.verts.map((v) => v.p[0]))).toBeCloseTo(maxX + 0.3, 5);
     expect(Math.min(...m.verts.map((v) => v.p[0]))).toBeCloseTo(-maxX - 0.3, 5);
+  });
+});
+
+describe('symmetry for materials and UVs', () => {
+  const symBox = () => modelOf(prims.box(2, 2, 2, 2));
+  const cx = (m: Model, fi: number) => m.faces[fi].v.reduce((s, v) => s + m.verts[v].p[0], 0) / m.faces[fi].v.length;
+
+  it('pairs each face with its twin across X', () => {
+    const m = symBox();
+    const tf = mirrorFaces(m);
+    expect(tf.size).toBe(m.faces.length);
+    tf.forEach((o, fi) => { expect(cx(m, o)).toBeCloseTo(-cx(m, fi), 6); expect(tf.get(o)).toBe(fi); });
+  });
+
+  it('finds the twin part of a part', () => {
+    const m = symBox();
+    // Split the -X half into a part of its own.
+    const g2 = makeGroup(m, 'Left', null).id;
+    m.faces.forEach((f, fi) => { if (cx(m, fi) < -1e-6) f.g = g2; });
+    const g1 = m.groups[0].id;
+    expect([...mirrorGroups(m, new Set([g1]))].sort()).toEqual([g1, g2].sort());
+    expect([...mirrorGroups(m, new Set([g2]))].sort()).toEqual([g1, g2].sort());
+  });
+
+  it('copies UVs across, overlapping or flipped, with seams', () => {
+    const m = symBox();
+    // Give each +X face distinct UVs and a seam on its first edge.
+    m.faces.forEach((f, fi) => {
+      if (cx(m, fi) > 1e-6) { f.uv = f.v.map((v, i) => [0.1 + fi * 0.01 + i * 0.05, 0.2 + i * 0.03]); f.seam = f.v.map((_, i) => i === 0); }
+    });
+    const tw = mirrorVerts(m), tf = mirrorFaces(m);
+    const n = copyMirroredUVs(m, null, 1, 'overlap');
+    expect(n).toBe(m.faces.filter((_, fi) => cx(m, fi) > 1e-6).length);
+    tf.forEach((o, fi) => {
+      if (cx(m, fi) <= 1e-6 || o === fi) return;
+      const f = m.faces[fi], g = m.faces[o];
+      // The twin corner of each vertex has the same UV.
+      f.v.forEach((v, i) => { const j = g.v.indexOf(tw.get(v)!); expect(g.uv[j]).toEqual(f.uv[i]); });
+      // The seam on the first edge carries to the matching edge.
+      const a = tw.get(f.v[0])!, b = tw.get(f.v[1])!;
+      const j = g.v.findIndex((v, k) => (v === a && g.v[(k + 1) % g.v.length] === b) || (v === b && g.v[(k + 1) % g.v.length] === a));
+      expect(g.seam?.[j]).toBe(true);
+    });
+    copyMirroredUVs(m, null, 1, 'flip');
+    tf.forEach((o, fi) => {
+      if (cx(m, fi) <= 1e-6 || o === fi) return;
+      const f = m.faces[fi], g = m.faces[o];
+      f.v.forEach((v, i) => { const j = g.v.indexOf(tw.get(v)!); expect(g.uv[j][0]).toBeCloseTo(1 - f.uv[i][0], 9); expect(g.uv[j][1]).toBeCloseTo(f.uv[i][1], 9); });
+    });
+  });
+
+  it('copies only the selection, from either side', () => {
+    const m = symBox();
+    const left = [...m.faces.keys()].find((fi) => cx(m, fi) < -0.5)!;
+    const right = mirrorFaces(m).get(left)!;
+    m.faces[left].uv = m.faces[left].v.map(() => [0.9, 0.9]);
+    const before = JSON.stringify(m.faces.map((f) => f.uv));
+    expect(copyMirroredUVs(m, new Set([left]), -1, 'overlap')).toBe(1);
+    expect(m.faces[right].uv.every((u) => u[0] === 0.9 && u[1] === 0.9)).toBe(true);
+    // Nothing else changed.
+    const after = m.faces.map((f) => f.uv);
+    JSON.parse(before).forEach((u: V2[], fi: number) => { if (fi !== right) expect(after[fi]).toEqual(u); });
   });
 });

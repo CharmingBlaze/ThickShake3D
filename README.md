@@ -132,6 +132,10 @@ Two kinds, as in Blender:
   - *Bend:* the twin across X bends as a mirror image; a faint dashed curve shows it.
   - *Subdivide, Smooth subdivide, Bevel, Inset, Poke, Dissolve, Solidify, Triangulate, To quads, Flip, Fill holes, Smooth and Flat shading, and Delete:* the matching selection on the other side is added first, so both sides change alike. Subdivide's Fractal roughens both sides as mirror images.
   - Tools that join things (Merge, Bridge, Make face) or push one way (Extrude) work on what's selected only, since doing both sides at once would join or push them together.
+  - *Materials:* Assign gives the matching part on the other side the material too (a model in one part already shares it).
+  - *UVs:* Mark and Clear Seam do the matching edges; Auto Unwrap, Smart Unwrap, the projections and Fit to 0-1 lay out both sides alike.
+  - *Copy UVs to Other Side* (UV menu, or More in the UV editor) gives the twin faces this side's UVs, as Blender's Copy Mirrored UVs: *Overlap* puts them on the same spot, so painting one side paints both; *Flip across U* mirrors them across the texture's middle, to match the paint editor's own Mirror. Seams copy too. Lay out one side by hand, then copy it across.
+  - *Painting on the model:* each brush dab also lands at the mirror point on the twin face, wherever its UVs put it.
   - It needs the model to be symmetric where you work: points without a twin across X are left alone.
 - **Live mirror (the Mirror card in the Scene panel):** with Mirror on, or on a part that has one, press Add Mirror. The part shows mirrored without the copy being real, so you model one half. As Blender's Mirror modifier:
   - *Axis* X, Y and Z, in any mix.

@@ -10,7 +10,7 @@ import { ed, type SelMode, type ToolId, type Workspace } from '../core/editor';
 import { bounds, edgeFaces, edgeKey, faceNormal, parseEdge } from '../core/geom';
 import * as ops from '../core/ops';
 import * as mt from '../core/meshtools';
-import { mirrorSelection } from '../core/symmetry';
+import { copyMirroredUVs, mirrorSelection } from '../core/symmetry';
 import * as prims from '../core/primitives';
 import { buildSample } from '../core/sample';
 import { addHumanoid, autoWeights, ensureTrack, heatWeights, keyFrames, mirrorJoints, mirrorWeights, pruneWeights, removeJoints, sampleTrack, setKey, smoothWeights, splitJoint, weightIssues } from '../core/skeleton';
@@ -50,6 +50,8 @@ const def = (id: string, label: string, run: Command['run'], extra: Partial<Comm
 const MIRRORED_TOOLS = new Set([
   'mesh.subdivideCuts', 'mesh.subdivide', 'mesh.bevel', 'mesh.inset', 'mesh.poke', 'mesh.dissolve', 'mesh.solidify',
   'mesh.triangulate', 'mesh.quadify', 'mesh.flip', 'mesh.fillHoles', 'mesh.smoothShade', 'mesh.flatShade', 'edit.delete',
+  // Unwrapping and projecting take in the other side's faces too, so both sides are laid out alike.
+  'uv.unwrap', 'uv.smart', 'uv.box', 'uv.planarView', 'uv.cylinder', 'uv.sphere', 'uv.fit',
 ]);
 
 /** Add the other side's matching vertices, edges and faces to the selection. */
@@ -1110,11 +1112,28 @@ function seamTargets(): string[] {
   return [...count.keys()].filter((k) => count.get(k) === 1 && (all.get(k)?.length ?? 0) > 1);
 }
 const seamOp = (label: string, on: boolean) => () => {
-  const edges = seamTargets();
+  let edges = seamTargets();
+  // With symmetry, the other side's matching edges get the seam too.
+  if (ed.mirrorX) edges = [...mirrorSelection(ed.model, { verts: new Set(), edges: new Set(edges), faces: new Set() }).edges];
   if (!need(edges.length > 0, 'Select edges, or faces to mark around.')) return;
   ed.transact(label, (m) => uv.setSeams(m, edges, on));
   toast(`${label}: ${edges.length} edge${edges.length === 1 ? '' : 's'}`, 'ok');
 };
+def('uv.copyMirror', 'Copy UVs to Other Side', () => {
+  // From the side most of the selection is on (or +X), to the twin faces across X.
+  const m0 = ed.model;
+  const sel = ed.selectedFaceSet();
+  let lean = 0;
+  sel.forEach((fi) => { const f = m0.faces[fi]; lean += f.v.reduce((s, v) => s + m0.verts[v].p[0], 0); });
+  const from: 1 | -1 = lean < 0 ? -1 : 1;
+  let n = 0;
+  ed.runOp('Copy UVs to other side', [
+    { key: 'from', label: 'From', type: 'choice', value: from, options: [[1, '+X to -X'], [-1, '-X to +X']] },
+    { key: 'mode', label: 'Place', type: 'choice', value: 'overlap', options: [['overlap', 'Overlap (paint both at once)'], ['flip', 'Flip across U']] },
+  ], (m, v) => { n = copyMirroredUVs(m, sel.size ? sel : null, v.from, v.mode); });
+  app.uvRefresh();
+  status(n ? `Copied the UVs of ${n} face${n === 1 ? '' : 's'} across X.` : 'No faces with a twin across X to copy to. The model needs to be symmetric.');
+}, { enabled: hasAnyMesh, hint: 'Give the twin faces across X the same UVs as this side, as Blender\'s Copy Mirrored UVs: overlapping, so painting one side paints both, or flipped across the texture\'s middle. Works on the selection, or the whole mesh with nothing selected.' });
 def('uv.pin', 'Pin Points', () => app.uv.pin(true), { enabled: hasAnyMesh, hint: 'Pinned points stay put when you unwrap again. Drag them with Live Unwrap on and the island follows.' });
 def('uv.unpin', 'Unpin Points', () => app.uv.pin(false), { enabled: hasAnyMesh });
 def('uv.live', 'Live Unwrap', () => { app.uv.live = !app.uv.live; ed.emit('view', 'tool'); app.uv.draw(); }, { checked: () => app.uv.live, hint: 'After you move a pinned point, the rest of its island re-solves around it.' });

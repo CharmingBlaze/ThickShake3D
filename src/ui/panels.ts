@@ -20,6 +20,7 @@ import { button, checkbox, h, ICONS, numField, renderInto, section, select, svgI
 import { toast } from './feedback';
 import { constraintsSection } from './constraintPanel';
 import { applyMirror, MIRROR_DEFAULTS, mirrorOf } from '../core/mirror';
+import { mirrorGroups } from '../core/symmetry';
 import { glyph } from './glyphs';
 
 let budgetId = 'indie';
@@ -689,9 +690,11 @@ function materialPanel() {
         }), { title: 'Duplicate this material', disabled: !mat }),
         button('Assign', () => {
           const id = ed.activeMaterial;
-          const groups = new Set([...ed.selectedFaceSet()].map((i) => m.faces[i].g));
+          let groups = new Set([...ed.selectedFaceSet()].map((i) => m.faces[i].g));
           if (!groups.size && ed.activeGroup !== null) groups.add(ed.activeGroup);
           if (!groups.size) { toast('Select a group first.', 'info'); return; }
+          // With symmetry, the matching part on the other side of X takes it too.
+          if (ed.mirrorX) groups = mirrorGroups(m, groups);
           ed.transact('Assign material', (d) => d.groups.forEach((g) => { if (groups.has(g.id)) g.material = id; }));
         }, { title: 'Assign to the selected or active group', disabled: !mat }),
         button('Delete', () => {
@@ -1144,7 +1147,7 @@ function ensureMaterial(name: string, groups?: number[]) {
   const wanted = groups ?? (() => {
     const g = new Set([...ed.selectedFaceSet()].map((i) => m.faces[i].g));
     if (!g.size && ed.activeGroup !== null) g.add(ed.activeGroup);
-    return [...g];
+    return [...(ed.mirrorX ? mirrorGroups(m, g) : g)];
   })();
   if (m.materials.some((x) => x.id === ed.activeMaterial) && !groups) {
     // Selected pieces with no material of their own take the active one, or the image wouldn't show on them.

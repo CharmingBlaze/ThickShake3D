@@ -6,6 +6,7 @@ import { faceNormal } from '../core/geom';
 import * as ops from '../core/ops';
 import { seamTwins, uvAtPoint, uvToPixel, worldPerTexel } from '../core/paint';
 import { autotileSlot, boxQuads, cellAt, cellCorners, cellsOnPlane, cubeBox, faceCell, faceInCell, fitTileToFace, NO_TRANSFORM, placeTileQuad, planeAxes, quadTileCounts, splitQuad, tileForCell, tileOfFace, tileUV, type TileGrid, type TilePlane } from '../core/tiles';
+import { mirrorFaces } from '../core/symmetry';
 import { makeGroup, type Model, type V3 } from '../core/types';
 import { app } from '../ui/app';
 import { status, toast } from '../ui/feedback';
@@ -71,6 +72,26 @@ export class TexPaintTool {
     }
   }
 
+  /** With symmetry: each face's twin across X, worked out when a stroke starts. */
+  private twinFace: Map<number, number> | null = null;
+
+  /** With Mirror X on, paint the same dab at the mirror point on the twin face, wherever its UVs put it. */
+  private paintMirror(h: { doc: TexDoc; px: number; py: number; face: number; point: V3 }) {
+    if (!this.twinFace || !strokeHasTip()) return;
+    const tf = this.twinFace.get(h.face);
+    if (tf === undefined || !this.sameTexture.includes(tf)) return;
+    const m = ed.model;
+    const q: V3 = [-h.point[0], h.point[1], h.point[2]];
+    const uv = uvAtPoint(m, tf, q);
+    if (!uv) return;
+    const [px, py] = uvToPixel(uv, h.doc.w, h.doc.h);
+    // On the centre line, or with overlapping UVs, the dab is already there.
+    if (Math.hypot(px - h.px, py - h.py) < 1) return;
+    const k = worldPerTexel(m, h.face, h.doc.w, h.doc.h), kt = worldPerTexel(m, tf, h.doc.w, h.doc.h) || k;
+    strokeAlso(-1, px, py, k && kt ? paint.size * (k / kt) : paint.size);
+    this.paintTwins({ doc: h.doc, face: tf, point: q });
+  }
+
   /** How many screen pixels one texel covers at the mouse, measured by picking just beside it. */
   private texelScale = 4;
 
@@ -87,7 +108,9 @@ export class TexPaintTool {
       const m = ed.model;
       this.sameTexture = [];
       m.faces.forEach((_, fi) => { if (textureOfFace(m, fi)?.id === h.doc.texId) this.sameTexture.push(fi); });
+      this.twinFace = ed.mirrorX ? mirrorFaces(m) : null;
       this.paintTwins(h);
+      this.paintMirror(h);
       strokeFlush();
     }
   }
@@ -110,7 +133,7 @@ export class TexPaintTool {
     // Lines and rectangles always follow the mouse from where they started.
     const shape = paint.tool === 'line' || paint.tool === 'rect';
     const far = !shape && (!this.last || Math.hypot(h.px - this.last[0], h.py - this.last[1]) > Math.max(12, paint.size * 4));
-    if (!shape) this.paintTwins(h);
+    if (!shape) { this.paintTwins(h); this.paintMirror(h); }
     strokeMove(h.px, h.py, far);
     this.last = [h.px, h.py];
   }
