@@ -980,6 +980,7 @@ export class Viewports {
   /** Keys for the Knife and Loop Cut, before the app's shortcuts. True if one was used. */
   toolKey(e: KeyboardEvent): boolean {
     if (this.modal) return this.modalKey(e);
+    if (this.refKey(e)) return true;
     if (this.insetModal.active) return this.insetModal.key(e);
     if (this.extrudeTool.active) return this.extrudeTool.key(e);
     // In the Paint and Tile workspaces their own keys come first: tools, colours, turning tiles.
@@ -1009,10 +1010,9 @@ export class Viewports {
     return ed.model.refs?.find((r) => r.id === ed.refActive) ?? null;
   }
 
-  /** The active picture's corners on screen, when it's being adjusted in this pane. */
-  private refCorners(p: Pane) {
-    const r = this.activeRef();
-    if (!ed.refEdit || !r || p.kind !== r.view) return null;
+  /** A picture's corners on screen, when pictures are being adjusted and it shows in this pane. */
+  private refCorners(p: Pane, r: RefImage | null = this.activeRef()) {
+    if (!ed.refEdit || !r || !r.visible || p.kind !== r.view) return null;
     const { right, up } = viewBasis(r.view);
     const w = (r.size * r.width) / Math.max(1, r.height), hh = r.size;
     return ([[-1, 1], [1, 1], [1, -1], [-1, -1]] as const).map(([sx, sy]) => {
@@ -1022,7 +1022,27 @@ export class Viewports {
     });
   }
 
+  /** The Hide and Delete buttons on the active picture's top right corner, on screen. */
+  private refButtons(p: Pane): { hide: { x: number; y: number }; del: { x: number; y: number }; done: { x: number; y: number } } | null {
+    const c = this.refCorners(p);
+    if (!c) return null;
+    // The top right corner on screen, whichever way round the view shows the picture.
+    const tr = c.reduce((a, q) => (q.x - q.y > a.x - a.y ? q : a));
+    const y = Math.max(p.y + 14, tr.y - 18);
+    const x = Math.min(p.x + p.w - 14, tr.x);
+    return { done: { x: x - 58, y }, hide: { x: x - 34, y }, del: { x: x - 10, y } };
+  }
+
   private drawRefHandles(g: CanvasRenderingContext2D, p: Pane) {
+    // Other pictures in this view show a faint outline, so they can be clicked to pick them.
+    if (ed.refEdit) for (const r of ed.model.refs ?? []) {
+      if (r.id === ed.refActive) continue;
+      const o = this.refCorners(p, r);
+      if (!o) continue;
+      g.strokeStyle = 'rgba(242,178,76,.45)'; g.lineWidth = 1; g.setLineDash([4, 4]);
+      g.beginPath(); o.forEach((q, i) => (i ? g.lineTo(q.x, q.y) : g.moveTo(q.x, q.y))); g.closePath(); g.stroke();
+      g.setLineDash([]);
+    }
     const c = this.refCorners(p);
     if (!c) return;
     g.strokeStyle = SEL; g.lineWidth = 1.5;
@@ -1032,10 +1052,89 @@ export class Viewports {
     g.stroke();
     g.fillStyle = SEL;
     for (const q of c) g.fillRect(q.x - 5, q.y - 5, 10, 10);
+    // Done, Hide and Delete, on the picture itself.
+    const b = this.refButtons(p)!;
+    const btn = (at: { x: number; y: number }, hot: boolean, draw: () => void) => {
+      g.fillStyle = hot ? '#3a2a14' : 'rgba(14,18,22,.9)';
+      g.strokeStyle = hot ? SEL : 'rgba(255,255,255,.25)'; g.lineWidth = 1;
+      g.beginPath(); g.roundRect(at.x - 10, at.y - 10, 20, 20, 4); g.fill(); g.stroke();
+      g.strokeStyle = hot ? SEL : '#e8e8e8'; g.fillStyle = g.strokeStyle; g.lineWidth = 1.6;
+      draw();
+    };
+    const hv = this.refHover;
+    btn(b.done, hv === 'done', () => { g.beginPath(); g.moveTo(b.done.x - 5, b.done.y); g.lineTo(b.done.x - 1.5, b.done.y + 4); g.lineTo(b.done.x + 5, b.done.y - 4); g.stroke(); });
+    btn(b.hide, hv === 'hide', () => {
+      const { x, y } = b.hide;
+      g.beginPath(); g.ellipse(x, y, 6.5, 4, 0, 0, Math.PI * 2); g.stroke();
+      g.beginPath(); g.arc(x, y, 1.8, 0, Math.PI * 2); g.fill();
+      g.beginPath(); g.moveTo(x - 6, y + 5); g.lineTo(x + 6, y - 5); g.stroke();
+    });
+    btn(b.del, hv === 'del', () => {
+      const { x, y } = b.del;
+      g.beginPath(); g.moveTo(x - 4.5, y - 4.5); g.lineTo(x + 4.5, y + 4.5); g.moveTo(x + 4.5, y - 4.5); g.lineTo(x - 4.5, y + 4.5); g.stroke();
+    });
+    // What the buttons and handles do, while the mouse is over one.
+    const tips: Record<string, string> = { done: 'Done (Esc)', hide: 'Hide (H)', del: 'Delete (Del)', corner: 'Drag to resize', move: 'Drag to move' };
+    const tip = hv ? tips[hv] : null;
+    if (tip) {
+      g.font = '11px system-ui, sans-serif';
+      const tw = g.measureText(tip).width;
+      const at = hv === 'done' || hv === 'hide' || hv === 'del' ? b[hv] : { x: this.mouse.x, y: this.mouse.y + 22 };
+      const tx = Math.min(p.x + p.w - tw - 14, Math.max(p.x + 4, at.x - tw / 2 - 5)), ty = hv === 'corner' || hv === 'move' ? at.y : at.y + 14;
+      g.fillStyle = 'rgba(12,16,20,.92)'; g.fillRect(tx, ty, tw + 10, 17);
+      g.fillStyle = '#e8e8e8'; g.fillText(tip, tx + 5, ty + 12.5);
+    }
+  }
+
+  /** What the mouse is over on the active picture, for highlighting it. */
+  private refHover: 'done' | 'hide' | 'del' | 'corner' | 'move' | null = null;
+
+  private refHit(p: Pane, x: number, y: number): 'done' | 'hide' | 'del' | 'corner' | 'move' | null {
+    const b = this.refButtons(p);
+    if (!b) return null;
+    for (const k of ['done', 'hide', 'del'] as const) if (Math.abs(b[k].x - x) <= 10 && Math.abs(b[k].y - y) <= 10) return k;
+    const c = this.refCorners(p)!;
+    if (c.some((q) => Math.abs(q.x - x) < 9 && Math.abs(q.y - y) < 9)) return 'corner';
+    const xs = c.map((q) => q.x), ys = c.map((q) => q.y);
+    return x > Math.min(...xs) && x < Math.max(...xs) && y > Math.min(...ys) && y < Math.max(...ys) ? 'move' : null;
+  }
+
+  /** The mouse moved while pictures are being adjusted: light up what's under it. */
+  private refMove(p: Pane | null, x: number, y: number) {
+    const hv = p ? this.refHit(p, x, y) : null;
+    if (hv !== this.refHover) { this.refHover = hv; this.invalidate(); }
+    if (hv) this.ov.style.cursor = hv === 'move' ? 'move' : hv === 'corner' ? 'nwse-resize' : 'pointer'; else this.updateCursor();
+  }
+
+  /** Keys while pictures are being adjusted: Delete removes the picture, H hides it, Esc or Enter finishes. */
+  private refKey(e: KeyboardEvent): boolean {
+    if (!ed.refEdit || e.ctrlKey || e.metaKey || e.altKey) return false;
+    if (e.key === 'Escape' || e.key === 'Enter') { app.run('ref.adjust'); return true; }
+    if (!this.activeRef()) return false;
+    if (e.key === 'Delete' || e.key === 'Backspace' || e.key.toLowerCase() === 'x') { app.run('ref.delete'); return true; }
+    if (e.key.toLowerCase() === 'h') { app.run('ref.toggle'); return true; }
+    return false;
   }
 
   /** Grab the active picture: a corner scales it from the opposite corner, and anywhere inside moves it. */
   private startRefDrag(p: Pane, x: number, y: number): boolean {
+    // The buttons on the picture.
+    const hit = this.refHit(p, x, y);
+    if (hit === 'done' || hit === 'hide' || hit === 'del') {
+      app.run(hit === 'done' ? 'ref.adjust' : hit === 'hide' ? 'ref.toggle' : 'ref.delete');
+      this.refHover = null;
+      return true;
+    }
+    // A click on another picture in this view picks it, and starts moving it.
+    if (!hit) {
+      const other = [...(ed.model.refs ?? [])].reverse().find((q) => {
+        const o = q.id !== ed.refActive ? this.refCorners(p, q) : null;
+        if (!o) return false;
+        const xs = o.map((v) => v.x), ys = o.map((v) => v.y);
+        return x > Math.min(...xs) && x < Math.max(...xs) && y > Math.min(...ys) && y < Math.max(...ys);
+      });
+      if (other) { ed.refActive = other.id; ed.emit('view', 'tool'); }
+    }
     const c = this.refCorners(p);
     const r = this.activeRef();
     if (!c || !r) return false;
@@ -1605,6 +1704,7 @@ export class Viewports {
         if (this.insetModal.active && p) { this.insetModal.move(p, x, y, e); return; }
         if (ed.tool === 'face' && p) { this.faceTool.move(p, x, y, e); return; }
         if (ed.tool === 'tile' && p) { this.tileTool.move(p, x, y); return; }
+        if (ed.refEdit) { this.refMove(p, x, y); if (this.refHover) return; }
         if (ed.tool === 'bend' && this.bendTool.dragging) { this.bendTool.move(p ?? this.active, x, y, e); return; }
         if (ed.tool === 'bend' && p) this.bendTool.move(p, x, y, e);
         if (ed.tool === 'loopcut') {

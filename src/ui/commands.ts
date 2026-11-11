@@ -55,6 +55,7 @@ export function runCommand(id: string) {
     if (r instanceof Promise) r.catch((e) => reportError(c.label, e));
   } catch (e) { reportError(c.label, e); }
 }
+app.run = runCommand;
 
 const hasFaces = () => ed.selectedFaceSet().size > 0;
 const hasVerts = () => ed.selectedVertexSet().size > 0;
@@ -1379,7 +1380,15 @@ const editRef = (label: string, fn: (r: RefImage) => void) => {
   ed.transact(label, (m) => { const r = m.refs?.find((x) => x.id === id); if (r) fn(r); });
 };
 const hasRef = () => !!ed.model.refs?.some((r) => r.id === ed.refActive);
-def('ref.adjust', 'Move and Scale Reference Image', () => { ed.refEdit = !ed.refEdit; ed.emit('view', 'tool'); app.vp.invalidate(); }, { checked: () => ed.refEdit, enabled: hasRef });
+def('ref.adjust', 'Move and Resize Reference Image', () => {
+  // Show it first: a hidden picture can't be placed.
+  const r = ed.model.refs?.find((x) => x.id === ed.refActive);
+  if (!ed.refEdit && r && !r.visible) editRef('Show reference image', (t) => { t.visible = true; });
+  ed.refEdit = !ed.refEdit;
+  if (ed.refEdit) status(`Drag the picture in the ${r?.view ?? ''} view to move it, a corner to resize it. Its buttons, or H and Delete, hide or delete it; Esc when done.`);
+  else status('');
+  ed.emit('view', 'tool'); app.vp.invalidate();
+}, { checked: () => ed.refEdit, enabled: hasRef, hint: 'Drag the picture in its view to move it, or a corner to resize it. Hide and Delete buttons sit on its corner. Esc when done.' });
 def('ref.fit', 'Fit Reference Image to Selection', () => {
   const pts = [...ed.selectedVertexSet()].map((v) => ed.model.verts[v].p);
   if (!need(pts.length > 0, 'Select what the picture should line up with.')) return;
@@ -1392,13 +1401,35 @@ def('ref.fit', 'Fit Reference Image to Selection', () => {
     r.x = (Math.max(...rights) + Math.min(...rights)) / 2;
   });
 }, { enabled: hasRef, hint: 'Scale the picture so its height matches the selection, and centre it there.' });
+def('ref.toggle', 'Hide Reference Image', () => {
+  const r = ed.model.refs?.find((x) => x.id === ed.refActive);
+  if (!r) return;
+  const was = r.visible;
+  editRef(was ? 'Hide reference image' : 'Show reference image', (t) => { t.visible = !was; });
+  // A hidden picture can't be dragged, so placing it ends; the Reference images list shows it again.
+  if (was) { ed.refEdit = false; status('Picture hidden. Its eye in the Reference images list shows it again.'); }
+  ed.emit('view', 'tool');
+}, { enabled: hasRef, hint: 'Hide the active reference picture, or show it again. H while placing pictures.' });
+def('ref.showAll', 'Show All Reference Images', () => {
+  if (!need(!!ed.model.refs?.some((r) => !r.visible), 'No hidden reference images.')) return;
+  ed.transact('Show reference images', (m) => { m.refs?.forEach((r) => { r.visible = true; }); });
+}, { enabled: () => !!ed.model.refs?.length });
+def('ref.hideAll', 'Hide All Reference Images', () => {
+  if (!need(!!ed.model.refs?.some((r) => r.visible), 'No reference images showing.')) return;
+  ed.transact('Hide reference images', (m) => { m.refs?.forEach((r) => { r.visible = false; }); });
+  ed.refEdit = false;
+  ed.emit('view', 'tool');
+}, { enabled: () => !!ed.model.refs?.length });
 def('ref.delete', 'Delete Reference Image', () => {
   const id = ed.refActive;
   ed.transact('Delete reference image', (m) => { m.refs = m.refs?.filter((r) => r.id !== id); });
-  ed.refActive = null;
-  ed.refEdit = false;
+  // The next picture becomes the active one, so several can be cleared in a row.
+  const next = ed.model.refs?.[ed.model.refs.length - 1];
+  ed.refActive = next?.id ?? null;
+  if (!next) ed.refEdit = false;
   ed.emit('view', 'tool');
-}, { enabled: hasRef });
+  status('Reference image deleted. Ctrl+Z brings it back.');
+}, { enabled: hasRef, hint: 'Delete the active reference picture. Delete while placing pictures.' });
 def('ref.ghost', 'See-Through Pieces', () => { ed.blockGhost = !ed.blockGhost; ed.emit('view', 'tool'); app.vp.invalidate(); }, { checked: () => ed.blockGhost, hint: 'Show the picture through your pieces while you trace it.' });
 def('ref.inPersp', 'Show References in Perspective', () => { ed.refsInPersp = !ed.refsInPersp; ed.emit('view', 'tool'); app.vp.invalidate(); }, { checked: () => ed.refsInPersp });
 

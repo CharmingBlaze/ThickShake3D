@@ -277,10 +277,11 @@ function referenceSection() {
     ))) : h('p', { class: 'muted small' }, 'Pick a view to load a picture behind it, or drop one onto a view.'),
     active ? [
       h('div', { class: 'btn-row' },
-        button(ed.refEdit ? 'Done placing' : 'Move and scale', () => runCommand('ref.adjust'), { class: ed.refEdit ? 'btn btn-primary' : 'btn', title: 'Drag the picture in its view, or a corner to scale it' }),
-        cmd('ref.fit', 'Fit to selection', commands.get('ref.fit')?.hint),
-        cmd('ref.delete', 'Delete'),
+        button(ed.refEdit ? 'Done' : 'Move and resize', () => runCommand('ref.adjust'), { class: ed.refEdit ? 'btn btn-primary' : 'btn', title: ed.refEdit ? 'Done (Esc)\nStop placing the picture and get back to the model' : 'Move and resize\nDrag the picture in its view to move it, or a corner to resize it' }),
+        button(active.visible ? 'Hide' : 'Show', () => runCommand('ref.toggle'), { class: 'btn', title: active.visible ? 'Hide (H)\nHide the picture; its eye in the list shows it again' : 'Show\nShow the picture again' }),
+        cmd('ref.delete', 'Delete', 'Delete (Del)\nDelete the picture. Ctrl+Z brings it back'),
       ),
+      h('div', { class: 'btn-row' }, cmd('ref.fit', 'Fit to selection', commands.get('ref.fit')?.hint)),
       h('label', { class: 'form-row' }, 'View', select<string>(active.view, [['front', 'Front'], ['back', 'Back'], ['left', 'Left'], ['right', 'Right'], ['top', 'Top'], ['bottom', 'Bottom']], (v) => ed.transact('Move reference image', (d) => { const t = d.refs?.find((x) => x.id === active.id); if (t) t.view = v as typeof t.view; }))),
       live('Opacity', 'opacity', { min: 0.02, max: 1, step: 0.01, digits: 2 }),
       live('Height', 'size', { min: 0.01, max: 1000, step: 0.01, digits: 3, title: 'In metres. Set this to the real size to work at real scale.' }),
@@ -509,11 +510,13 @@ function scenePanel() {
   const rows = groupRows();
   const selFaces = ed.selectedFaceSet().size;
   return [
+    ed.refEdit ? referenceSection() : null,
     faceToolSection(),
     bendSection(),
     modeToolsSection(),
     mirrorSection(),
     inspector(),
+    !ed.refEdit && ed.model.refs?.length ? referenceSection() : null,
     section('Groups',
       rows.length ? h('div', { class: 'list' }, rows) : h('p', { class: 'muted' }, 'Add a primitive to create your first group.'),
       h('div', { class: 'btn-row' },

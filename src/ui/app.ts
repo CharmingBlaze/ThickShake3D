@@ -19,4 +19,6 @@ export const app = {
   tilesRefresh: () => {},
   /** The Paint workspace's keys in the view: tools, colour swap, brush size. True if used. */
   paintKey: (_e: KeyboardEvent) => false as boolean,
+  /** Run a command by its id, for the views, which can't import the command list. */
+  run: (_id: string) => {},
 };

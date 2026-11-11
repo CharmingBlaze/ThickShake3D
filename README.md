@@ -179,6 +179,14 @@ Start from a Character, Chibi or Creature body made of named pieces, or from not
 
 To work over a drawing or photo, press Front, Side, Top or Back under Reference images, or drop a picture onto a view. Drag it into place and scale it by a corner, then pick a shape. It shows behind that view and stands in the perspective view too. See-through pieces lets you trace it. Pictures are saved with the project and never exported.
 
+Working with reference pictures, in any workspace (the Scene panel lists them once there are any; View > Add Reference Image adds one):
+
+- **Move and resize:** press Move and resize (or View > Move and Resize Reference Image). Drag the picture in its view to move it, or a corner to resize it; the opposite corner stays put. Click another picture in the same view to switch to it.
+- **Hide:** the eye beside it in the list, the Hide button, the eye button on the picture, or H while placing. View > Hide All and Show All do every picture at once.
+- **Delete:** the Delete button, the X button on the picture, or Delete while placing. Ctrl+Z brings it back.
+- **Done:** the tick button on the picture, Done, Esc, or picking any tool.
+- Opacity, height, position and which view it sits behind are in the panel, along with Fit to selection.
+
 1. Pick a body part (Head, Torso, Arm, Leg, Hand, Foot, Ear, Horn, Tail or Wing) and drag from one end of it to the other, such as chin to crown or shoulder to wrist. The Limb tool does the same for plain limbs.
 2. For anything else organic, Tube turns a freehand line into a rounded tube for tentacles or hair, Draw Shape inflates a freehand outline into a solid you shape with the same three rings as Pen Shape below (Enter finishes, Esc cancels, and drawing again starts the next one), and Lathe spins half an outline around the centre line. Other shapes drag out as an outline in one view and then depth in another. The Create menu has every shape, including wedges, stairs and doorways.
 3. **Pen Shape** draws an outline the way a vector pen does, then inflates it. Click for a corner, or drag for a curve. Click the first point, or press Enter, to close the outline.
