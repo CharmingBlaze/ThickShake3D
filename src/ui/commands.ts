@@ -484,7 +484,7 @@ def('mesh.inset', 'Inset Faces', () => {
   });
 }, { key: 'I', enabled: notPose, hint: 'Inset the selected faces as one region, as Blender does: move the mouse toward their middle to widen the border. Ctrl+mouse: depth. I: each face on its own. E: even width. Type a width. Click keeps it.' });
 
-def('mesh.subdivide', 'Subdivide (Smooth)', () => {
+def('mesh.subdivide', 'Smooth Subdivide', () => {
   const start = ed.selectedFaceSet(true);
   if (!need(start.size > 0, 'Nothing to subdivide.')) return;
   const whole = start.size === ed.model.faces.length;
@@ -504,7 +504,37 @@ def('mesh.subdivide', 'Subdivide (Smooth)', () => {
     }
     ed.clearSelection();
   });
-}, { key: 'Ctrl+Shift+D', enabled: notPose });
+}, { key: 'Ctrl+Shift+D', enabled: notPose, hint: 'Split every selected face into quads and round the shape off, as a subdivision surface does. Levels and Smooth are adjustable afterwards.' });
+
+def('mesh.subdivideCuts', 'Subdivide', () => {
+  // As Blender's Subdivide: the selected edges (or the edges of the selected faces) are cut into even pieces, and
+  // faces cut all round become grids. Its settings stay adjustable in the last-operation panel.
+  const m0 = ed.model;
+  let edges: Set<string>;
+  if (ed.mode === 'edge') edges = new Set(ed.selEdges);
+  else if (ed.mode === 'vertex') edges = mt.edgesAmong(m0, ed.selectedVertexSet());
+  else {
+    edges = new Set();
+    for (const fi of ed.selectedFaceSet()) { const f = m0.faces[fi]; f.v.forEach((a, i) => edges.add(edgeKey(a, f.v[(i + 1) % f.v.length]))); }
+  }
+  if (!need(edges.size > 0, 'Select faces or edges to subdivide.')) return;
+  const mode = ed.mode;
+  ed.runOp('Subdivide', [
+    { key: 'cuts', label: 'Number of cuts', type: 'number', value: 1, min: 1, max: 32, step: 1 },
+    { key: 'smoothness', label: 'Smoothness', type: 'number', value: 0, min: 0, max: 2, step: 0.05 },
+    { key: 'fractal', label: 'Fractal', type: 'number', value: 0, min: 0, max: 10, step: 0.05 },
+    { key: 'alongNormal', label: 'Along normal', type: 'number', value: 0, min: 0, max: 1, step: 0.05 },
+    { key: 'seed', label: 'Random seed', type: 'number', value: 0, min: 0, max: 10000, step: 1 },
+  ], (m, v) => {
+    const r = mt.subdivideCuts(m, edges, { cuts: v.cuts, smoothness: v.smoothness, fractal: v.fractal, alongNormal: v.alongNormal, seed: v.seed });
+    ed.clearSelection();
+    ed.mode = mode;
+    // What was cut stays selected, in pieces, as in Blender.
+    if (mode === 'face' || mode === 'group') r.faces.forEach((fi) => ed.selFaces.add(fi));
+    else if (mode === 'edge') r.chains.forEach((c) => { for (let i = 0; i + 1 < c.length; i++) ed.selEdges.add(edgeKey(c[i], c[i + 1])); });
+    else r.chains.forEach((c) => c.forEach((x) => ed.selVerts.add(x)));
+  });
+}, { enabled: notPose, hint: 'Cut the selected edges, or the edges of the selected faces, into even pieces, as Blender does: faces cut all round become grids. Number of cuts, Smoothness (rounds it out), Fractal and Along normal (roughen it) and Random seed are adjustable afterwards.' });
 
 def('mesh.triangulate', 'Triangulate', () => {
   const faces = ed.selectedFaceSet(true);

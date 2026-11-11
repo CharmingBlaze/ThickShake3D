@@ -143,7 +143,10 @@ The Scene panel opens with the tools for the selection mode in use (Vertex, Edge
 
 - **Vertex editing:** move, rotate and scale; merge, weld, collapse, connect, make face and dissolve; relax, flatten, circle, space, curve and extrude; fill, grid fill and bridge; selecting linked, grown, shrunk, by path or open edges; duplicate and delete.
 - **Edge editing:** extrude, bevel, loop cut, knife, bridge and spin; circle, space, curve, flatten, merge and dissolve; fills; seams; loop, ring and other selections.
-- **Face editing:** extrude, inset, bevel, poke, subdivide and solidify; dissolve, triangulate, to quads, mirror, bridge and merge; flip and outside; shading; detach, separate, loose parts, duplicate and delete; and selecting by coplanar, n-gons, triangles, checker or path.
+- **Face editing:** extrude, inset, bevel, subdivide, smooth subdivide, poke, solidify and fill holes; dissolve, triangulate, to quads, mirror, bridge and merge; flip and outside; shading; detach, separate, loose parts, duplicate and delete; and selecting by coplanar, n-gons, triangles, checker or path.
+- **Flip faces and Fill:** Flip faces (Alt+N) and Outside (Shift+N) are in every mode's tools, as are Fill, Grid fill and Make face (F) in Vertex and Edge modes, and Fill holes in Face and Group modes.
+- **Subdivide, as Blender's:** cuts the selected edges, or every edge of the selected faces, into even pieces; quads and triangles cut all round become grids, and faces beside them take the new points so nothing cracks. Afterwards, in the last-operation panel: *Number of cuts*, *Smoothness* (rounds the shape out: 1 on a cube with a few cuts makes a cushion), *Fractal* and *Along normal* (roughen it, for rock or bark) and *Random seed*. UVs and skin weights carry over.
+- **Smooth subdivide (Ctrl+Shift+D):** the other kind, a subdivision surface: every face splits into quads and the shape rounds off, by Levels.
 - **Group editing:** duplicate, merge, loose parts, mirror and delete; centre, to ground and real-world height; shading; LODs and colliders.
 - **Joint editing:** add, insert, mirror, humanoid and delete; move, rotate, IK drag and test pose; weighting, assigning, painting and finding unweighted vertices.
 

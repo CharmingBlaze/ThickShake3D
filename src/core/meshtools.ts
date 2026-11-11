@@ -1,8 +1,8 @@
 // More mesh tools, after Blender and its LoopTools add-on: loop shaping (circle, flatten, space, bridge), hole
 // filling (grid fill, fill), bevel, dissolve, connect, poke, solidify, spin, separating loose parts, and selection
 // helpers. Each mutates the model in place; the editor wraps calls in undo steps.
-import { add, cross, dist, dot, edgeFaces, edgeKey, faceNormal, len, norm, parseEdge, sub, triangulate } from './geom';
-import { fixNormals, removeLoose } from './ops';
+import { add, cross, dist, dot, edgeFaces, edgeKey, faceNormal, faceNormalRaw, len, norm, parseEdge, sub, triangulate } from './geom';
+import { blendWeights, fixNormals, removeLoose } from './ops';
 import type { Face, Model, V2, V3 } from './types';
 
 const scale = (a: V3, k: number): V3 => [a[0] * k, a[1] * k, a[2] * k];
@@ -1028,4 +1028,199 @@ export function insetRegion(m: Model, faces: Set<number>, o: InsetOptions): numb
   }
   m.faces.push(...rims);
   return [...faces];
+}
+
+// ---------- subdivide, as Blender's ----------
+export interface SubdivideOpts {
+  /** Points added along each cut edge: 1 halves it. */
+  cuts: number;
+  /** How far new points round out toward a smooth surface, from the corners' normals: 0 flat, 1 round. */
+  smoothness: number;
+  /** Random roughness, for rock and bark: how far new points wander, in parts of a piece's size. */
+  fractal: number;
+  /** 0 lets roughness go any way; 1 keeps it along the surface's normal. */
+  alongNormal: number;
+  seed: number;
+}
+
+/** A small, repeatable random number source. */
+function rng(seed: number) {
+  let a = (seed * 2654435761) >>> 0 || 1;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/**
+ * Blender's Subdivide: each edge in `edges` is cut into cuts + 1 even pieces. A quad or triangle whose every edge is
+ * cut becomes a grid of smaller quads or triangles; any other face just gets the new points along its cut edges, so
+ * nothing cracks. Smoothness rounds new points out using the corners' normals (Phong-style, so a point on an edge only
+ * depends on that edge and neighbours always agree). Returns the faces made and the vertices added.
+ */
+export function subdivideCuts(m: Model, edges: Set<string>, o: SubdivideOpts): { faces: number[]; verts: number[]; chains: number[][] } {
+  const cuts = Math.max(1, Math.round(o.cuts));
+  const n = cuts + 1;
+  const rand = rng(o.seed + 1);
+  // Smooth vertex normals, weighted by face area.
+  const vn: V3[] = m.verts.map(() => [0, 0, 0]);
+  for (const f of m.faces) {
+    const fn = faceNormalRaw(m, f);
+    for (const v of f.v) { vn[v][0] += fn[0]; vn[v][1] += fn[1]; vn[v][2] += fn[2]; }
+  }
+  for (let i = 0; i < vn.length; i++) vn[i] = len(vn[i]) > 1e-12 ? norm(vn[i]) : [0, 1, 0];
+
+  const added: number[] = [];
+  /** A point over corners `cs` with weights `ws`: in between, rounded out by smoothness, roughened by fractal. */
+  const place = (cs: number[], ws: number[], size: number): V3 => {
+    const p: V3 = [0, 0, 0];
+    cs.forEach((c, i) => { const q = m.verts[c].p; p[0] += q[0] * ws[i]; p[1] += q[1] * ws[i]; p[2] += q[2] * ws[i]; });
+    const ph: V3 = [0, 0, 0];
+    const nrm: V3 = [0, 0, 0];
+    cs.forEach((c, i) => {
+      const q = m.verts[c].p, nc = vn[c];
+      const d = (p[0] - q[0]) * nc[0] + (p[1] - q[1]) * nc[1] + (p[2] - q[2]) * nc[2];
+      ph[0] += (p[0] - nc[0] * d) * ws[i]; ph[1] += (p[1] - nc[1] * d) * ws[i]; ph[2] += (p[2] - nc[2] * d) * ws[i];
+      nrm[0] += nc[0] * ws[i]; nrm[1] += nc[1] * ws[i]; nrm[2] += nc[2] * ws[i];
+    });
+    const s = o.smoothness;
+    const out: V3 = [p[0] + (ph[0] - p[0]) * s, p[1] + (ph[1] - p[1]) * s, p[2] + (ph[2] - p[2]) * s];
+    if (o.fractal) {
+      const nn: V3 = len(nrm) > 1e-12 ? norm(nrm) : [0, 1, 0];
+      // A random way, leaning toward the normal as Along Normal rises, scaled to the piece.
+      let r: V3 = [rand() * 2 - 1, rand() * 2 - 1, rand() * 2 - 1];
+      r = len(r) > 1e-9 ? norm(r) : nn;
+      const k = rand() * 2 - 1;
+      const a = Math.min(1, Math.max(0, o.alongNormal));
+      const d: V3 = [r[0] * (1 - a) + nn[0] * k * a, r[1] * (1 - a) + nn[1] * k * a, r[2] * (1 - a) + nn[2] * k * a];
+      const amt = o.fractal * size * 0.25;
+      out[0] += d[0] * amt; out[1] += d[1] * amt; out[2] += d[2] * amt;
+    }
+    return out;
+  };
+  const addVert = (cs: number[], ws: number[], size: number) => {
+    const p = place(cs, ws, size);
+    const w = blendWeights(cs.map((c) => m.verts[c]), ws);
+    m.verts.push(w ? { p, w } : { p });
+    added.push(m.verts.length - 1);
+    return m.verts.length - 1;
+  };
+
+  // The new points along each cut edge, from its lower-numbered end to the other.
+  const pts = new Map<string, number[]>();
+  const chains: number[][] = [];
+  for (const k of edges) {
+    const [a, b] = parseEdge(k);
+    if (!m.verts[a] || !m.verts[b] || a === b) continue;
+    const L = dist(m.verts[a].p, m.verts[b].p);
+    const lo = Math.min(a, b), hi = Math.max(a, b);
+    const list: number[] = [];
+    for (let i = 1; i <= cuts; i++) { const t = i / n; list.push(addVert([lo, hi], [1 - t, t], L)); }
+    pts.set(edgeKey(a, b), list);
+    chains.push([lo, ...list, hi]);
+  }
+  /** The points along a face side from corner x to corner y, in that order, or null when it isn't cut. */
+  const side = (x: number, y: number) => {
+    const l = pts.get(edgeKey(x, y));
+    if (!l) return null;
+    return x < y ? l : [...l].reverse();
+  };
+  const lerpUV = (a: V2, b: V2, t: number): V2 => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+
+  const out: Face[] = [];
+  const made: number[] = [];
+  for (const f of m.faces) {
+    const k = f.v.length;
+    const sides = f.v.map((v, i) => side(v, f.v[(i + 1) % k]));
+    if (!sides.some(Boolean)) { out.push(f); continue; }
+    const seamOf = (i: number) => !!f.seam?.[i];
+    const withSeams = !!f.seam;
+    const size = Math.max(1e-6, ...f.v.map((v, i) => dist(m.verts[v].p, m.verts[f.v[(i + 1) % k]].p)));
+    const start = out.length;
+    if (k === 4 && sides.every(Boolean)) {
+      // A grid of (cuts + 1) squared quads. grid[i][j]: i runs from corner 0 to 1, j from corner 0 to 3.
+      const [c0, c1, c2, c3] = f.v;
+      const [s0, s1, s2, s3] = sides as number[][];
+      const grid: number[][] = [];
+      for (let i = 0; i <= n; i++) {
+        grid.push([]);
+        for (let j = 0; j <= n; j++) {
+          let v: number;
+          if (j === 0) v = i === 0 ? c0 : i === n ? c1 : s0[i - 1];
+          else if (i === n) v = j === n ? c2 : s1[j - 1];
+          else if (j === n) v = i === 0 ? c3 : s2[n - 1 - i];
+          else if (i === 0) v = s3[n - 1 - j];
+          else {
+            const u = i / n, w = j / n;
+            v = addVert([c0, c1, c2, c3], [(1 - u) * (1 - w), u * (1 - w), u * w, (1 - u) * w], size / n);
+          }
+          grid[i].push(v);
+        }
+      }
+      const uvAt = (i: number, j: number): V2 => {
+        const u = i / n, w = j / n;
+        return lerpUV(lerpUV(f.uv[0], f.uv[1], u), lerpUV(f.uv[3], f.uv[2], u), w);
+      };
+      for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
+        const nf: Face = {
+          v: [grid[i][j], grid[i + 1][j], grid[i + 1][j + 1], grid[i][j + 1]],
+          uv: [uvAt(i, j), uvAt(i + 1, j), uvAt(i + 1, j + 1), uvAt(i, j + 1)],
+          g: f.g, s: f.s,
+        };
+        if (withSeams) nf.seam = [j === 0 && seamOf(0), i + 1 === n && seamOf(1), j + 1 === n && seamOf(2), i === 0 && seamOf(3)];
+        out.push(nf);
+      }
+    } else if (k === 3 && sides.every(Boolean)) {
+      // A grid of small triangles. Point (i, j) is i steps toward corner 1 and j toward corner 2.
+      const [c0, c1, c2] = f.v;
+      const [s0, s1, s2] = sides as number[][];
+      const at = new Map<string, number>();
+      const id = (i: number, j: number) => {
+        const key = `${i},${j}`;
+        let v = at.get(key);
+        if (v !== undefined) return v;
+        if (i === 0 && j === 0) v = c0;
+        else if (i === n && j === 0) v = c1;
+        else if (i === 0 && j === n) v = c2;
+        else if (j === 0) v = s0[i - 1];
+        else if (i + j === n) v = s1[j - 1];
+        else if (i === 0) v = s2[n - j - 1];
+        else v = addVert([c0, c1, c2], [(n - i - j) / n, i / n, j / n], size / n);
+        at.set(key, v);
+        return v;
+      };
+      const uvAt = (i: number, j: number): V2 => {
+        const a = (n - i - j) / n, b = i / n, c = j / n;
+        return [f.uv[0][0] * a + f.uv[1][0] * b + f.uv[2][0] * c, f.uv[0][1] * a + f.uv[1][1] * b + f.uv[2][1] * c];
+      };
+      for (let j = 0; j < n; j++) for (let i = 0; i + j < n; i++) {
+        const up: Face = { v: [id(i, j), id(i + 1, j), id(i, j + 1)], uv: [uvAt(i, j), uvAt(i + 1, j), uvAt(i, j + 1)], g: f.g, s: f.s };
+        if (withSeams) up.seam = [j === 0 && seamOf(0), i + j + 1 === n && seamOf(1), i === 0 && seamOf(2)];
+        out.push(up);
+        if (i + j < n - 1) {
+          const dn: Face = { v: [id(i + 1, j), id(i + 1, j + 1), id(i, j + 1)], uv: [uvAt(i + 1, j), uvAt(i + 1, j + 1), uvAt(i, j + 1)], g: f.g, s: f.s };
+          if (withSeams) dn.seam = [false, false, false];
+          out.push(dn);
+        }
+      }
+    } else {
+      // Only some sides cut, or more than four corners: the new points join the face's outline.
+      const v: number[] = [], uv: V2[] = [], seam: boolean[] = [];
+      for (let i = 0; i < k; i++) {
+        v.push(f.v[i]); uv.push(f.uv[i]); seam.push(seamOf(i));
+        const sp = sides[i];
+        if (sp) sp.forEach((p, q) => { v.push(p); uv.push(lerpUV(f.uv[i], f.uv[(i + 1) % k], (q + 1) / n)); seam.push(seamOf(i)); });
+      }
+      const nf: Face = { ...f, v, uv };
+      if (withSeams) nf.seam = seam; else delete nf.seam;
+      delete nf.pin;
+      out.push(nf);
+    }
+    for (let q = start; q < out.length; q++) made.push(q);
+  }
+  m.faces = out;
+  return { faces: made, verts: added, chains };
 }

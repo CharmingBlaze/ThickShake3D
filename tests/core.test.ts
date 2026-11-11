@@ -25,7 +25,7 @@ import { buildExportMesh, buildGltf, computeTangents, exportGLB } from '../src/i
 import { applyConstraints, bakeIKToFK, constraintWeight, keyWeight, prepareRigForExport, sampleLocals, snapTargetToFK } from '../src/core/constraints';
 import { bakeAO, bakeNormals, buildBvh, dilate, raycast, runToEnd, sampleSurface, type BakeMesh } from '../src/core/bake';
 import { packRects, remapIntoAtlas, type PackedRect } from '../src/core/atlas';
-import { bevelEdges, bridgeLoops, checkerFaces, extrudeEdges, insetRegion, circleLoops, connectVerts, dissolveEdges, dissolveFaces, dissolveVerts, edgeLoops, fitPlane, flattenVerts, gridFill, holeLoops, looseParts, pokeFaces, shortestFacePath, shortestPath, solidify, spaceLoops, spin, triFill } from '../src/core/meshtools';
+import { bevelEdges, bridgeLoops, checkerFaces, extrudeEdges, insetRegion, circleLoops, connectVerts, dissolveEdges, dissolveFaces, dissolveVerts, edgeLoops, fitPlane, flattenVerts, gridFill, holeLoops, looseParts, pokeFaces, shortestFacePath, shortestPath, solidify, spaceLoops, spin, subdivideCuts, triFill } from '../src/core/meshtools';
 import { mergeInto } from '../src/io/importer';
 import { applyAllMirrors, clipToMirror, MIRROR_DEFAULTS, mirrorCopies } from '../src/core/mirror';
 import { applyBend, bendSetup, curvePoints, selectionPieces, straightShape, toLocal, toWorld } from '../src/core/bend';
@@ -2918,3 +2918,93 @@ describe('bend along a curve', () => {
   });
 });
 
+describe('subdivide, as Blender', () => {
+  const allEdges = (m: Model) => {
+    const s = new Set<string>();
+    for (const f of m.faces) f.v.forEach((a, i) => s.add(edgeKey(a, f.v[(i + 1) % f.v.length])));
+    return s;
+  };
+  const opts = (o: Partial<{ cuts: number; smoothness: number; fractal: number; alongNormal: number; seed: number }> = {}) => ({ cuts: 1, smoothness: 0, fractal: 0, alongNormal: 0, seed: 0, ...o });
+
+  it('cuts every edge of a box into a grid, keeping it closed and the same shape', () => {
+    const m = modelOf(prims.box(2, 2, 2));
+    const vol = signedVolume(m, all(m));
+    const r = subdivideCuts(m, allEdges(m), opts());
+    expect(m.faces.length).toBe(24);
+    expect(m.verts.length).toBe(8 + 12 + 6);
+    expect(r.faces.length).toBe(24);
+    expect(isClosed(m)).toBe(true);
+    expect(isConsistent(m)).toBe(true);
+    expect(signedVolume(m, all(m))).toBeCloseTo(vol, 6);
+    expect(m.faces.every((f) => f.v.length === 4)).toBe(true);
+  });
+
+  it('makes more cuts: n cuts give (n + 1) squared quads a face', () => {
+    const m = modelOf(prims.box(2, 2, 2));
+    subdivideCuts(m, allEdges(m), opts({ cuts: 2 }));
+    expect(m.faces.length).toBe(6 * 9);
+    expect(m.verts.length).toBe(8 + 12 * 2 + 6 * 4);
+    expect(isClosed(m)).toBe(true);
+  });
+
+  it('rounds the shape out with smoothness', () => {
+    const m = modelOf(prims.box(2, 2, 2));
+    const vol = signedVolume(m, all(m));
+    const r = subdivideCuts(m, allEdges(m), opts({ cuts: 2, smoothness: 1 }));
+    expect(signedVolume(m, all(m))).toBeGreaterThan(vol * 1.05);
+    // Every new point moves out past the flat surface it came from.
+    for (const v of r.verts) expect(Math.max(...m.verts[v].p.map(Math.abs))).toBeGreaterThan(1 + 1e-6);
+    expect(isClosed(m)).toBe(true);
+  });
+
+  it('cuts only the selection, giving its neighbours the new points so nothing cracks', () => {
+    const m = modelOf(prims.box(2, 2, 2));
+    const top = m.faces.findIndex((f) => f.v.every((v) => m.verts[v].p[1] > 0.9));
+    const edges = new Set(m.faces[top].v.map((a, i, v) => edgeKey(a, v[(i + 1) % 4])));
+    const r = subdivideCuts(m, edges, opts());
+    expect(r.faces.length).toBe(4 + 4);
+    expect(m.faces.length).toBe(5 + 4);
+    expect(m.verts.length).toBe(8 + 4 + 1);
+    expect(isClosed(m)).toBe(true);
+    expect(isConsistent(m)).toBe(true);
+    // The four sides each gained a point on their top edge.
+    expect(m.faces.filter((f) => f.v.length === 5).length).toBe(4);
+  });
+
+  it('cuts triangles into smaller triangles', () => {
+    const m = modelOf(prims.box(2, 2, 2));
+    ops.triangulateFaces(m, all(m));
+    subdivideCuts(m, allEdges(m), opts({ cuts: 2 }));
+    expect(m.faces.length).toBe(12 * 9);
+    expect(m.faces.every((f) => f.v.length === 3)).toBe(true);
+    expect(isClosed(m)).toBe(true);
+    expect(isConsistent(m)).toBe(true);
+  });
+
+  it('roughens with fractal, the same way for the same seed', () => {
+    const run = (seed: number) => { const m = modelOf(prims.box(2, 2, 2)); subdivideCuts(m, allEdges(m), opts({ cuts: 3, fractal: 1, seed })); return m.verts.map((v) => v.p.join()).join(';'); };
+    const flat = modelOf(prims.box(2, 2, 2)); subdivideCuts(flat, allEdges(flat), opts({ cuts: 3 }));
+    expect(run(4)).toBe(run(4));
+    expect(run(4)).not.toBe(run(5));
+    expect(run(4)).not.toBe(flat.verts.map((v) => v.p.join()).join(';'));
+  });
+
+  it('carries UVs and skin weights onto the new points', () => {
+    const m = modelOf(prims.box(2, 2, 2));
+    m.verts.forEach((v, i) => { v.w = [[i % 2, 1]]; });
+    const f0 = m.faces[0];
+    const corners = f0.uv.map((u) => [...u]);
+    const r = subdivideCuts(m, new Set(f0.v.map((a, i, v) => edgeKey(a, v[(i + 1) % 4]))), opts());
+    // The middle of the first face's grid has the middle of its UVs.
+    const mid = r.faces.map((fi) => m.faces[fi]).find((f) => f.v.length === 4 && f.v.some((v) => r.verts.includes(v)) && f.uv.length === 4)!;
+    const cu = [(corners[0][0] + corners[2][0]) / 2, (corners[0][1] + corners[2][1]) / 2];
+    const centreIdx = mid.v.findIndex((v) => r.verts[r.verts.length - 1] === v);
+    expect(centreIdx).toBeGreaterThanOrEqual(0);
+    expect(mid.uv[centreIdx][0]).toBeCloseTo(cu[0], 6);
+    expect(mid.uv[centreIdx][1]).toBeCloseTo(cu[1], 6);
+    for (const v of r.verts) {
+      const w = m.verts[v].w!;
+      expect(w.reduce((s, x) => s + x[1], 0)).toBeCloseTo(1, 6);
+    }
+  });
+});
