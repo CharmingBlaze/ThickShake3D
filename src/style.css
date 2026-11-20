@@ -1,24 +1,24 @@
 :root {
   color-scheme: dark;
-  --bg-0: #0e1012;
-  --bg-1: #17191c;
-  --bg-2: #1e2125;
-  --bg-3: #272b30;
-  --bg-4: #33383f;
-  --line: #2b2f35;
-  --line-2: #3b4047;
-  --text: #dfe2e6;
-  --text-2: #a4abb4;
-  --text-3: #7d858f;
-  --accent: #f2b24c;
-  --accent-ink: #1d1508;
-  --accent-soft: rgba(242, 178, 76, 0.14);
-  --x: #e8555a;
-  --y: #7bc043;
-  --z: #4a90e2;
+  --bg-0: #141516;
+  --bg-1: #2d2e30;
+  --bg-2: #333436;
+  --bg-3: #3c3d40;
+  --bg-4: #46484c;
+  --line: #1c1d1f;
+  --line-2: #4a4b4f;
+  --text: #d8d9dc;
+  --text-2: #a3a5aa;
+  --text-3: #7b7e85;
+  --accent: #2f7fd6;
+  --accent-ink: #ffffff;
+  --accent-soft: rgba(47, 127, 214, 0.18);
+  --x: #e5525e;
+  --y: #6fcf5c;
+  --z: #4f8ff0;
   --ok: #7bc043;
   --warn: #e8b13c;
-  --err: #e8555a;
+  --err: #d9534f;
   --info: #6fa8dc;
   --dock-w: 310px;
   --tl-h: 210px;
@@ -30,7 +30,7 @@
 html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg-1); color: var(--text); font: 12px/1.4 var(--font); user-select: none; -webkit-user-select: none; }
 #app { height: 100%; display: grid; grid-template-rows: auto minmax(0, 1fr) 24px; }
 button, input, select { font: inherit; color: inherit; }
-button { cursor: pointer; background: none; border: none; }
+button { cursor: pointer; background: none; border: none; text-align: center; justify-content: center; }
 button:disabled { cursor: default; opacity: 0.42; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
 canvas:focus-visible { outline: none; }
@@ -76,7 +76,7 @@ p { margin: 0; }
 .palette-hint { flex: none; display: flex; align-items: center; justify-content: center; width: 26px; height: 24px; color: var(--text-2); border: 1px solid var(--line-2); border-radius: 0; background: var(--bg-1); }
 .palette-hint:hover { color: var(--text); }
 .lastop-host { position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); z-index: 5; max-width: calc(100% - 24px); }
-.lastop { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 4px 10px; background: var(--bg-2); border: 1px solid rgba(242, 178, 76, 0.55); border-radius: 0; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45); }
+.lastop { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 4px 10px; background: var(--bg-2); border: 1px solid rgba(47, 127, 214, 0.55); border-radius: 0; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45); }
 .lastop-title { font-weight: 600; color: var(--accent); white-space: nowrap; }
 
 /* Main */
@@ -183,7 +183,7 @@ body.resizing canvas { pointer-events: none; }
 .btn { flex: none; padding: 4px 10px; background: var(--bg-3); border: 1px solid var(--line-2); border-radius: 0; color: var(--text); white-space: nowrap; }
 .btn:not(:disabled):hover { background: var(--bg-4); }
 .btn-primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
-.btn-primary:not(:disabled):hover { background: #f8c367; }
+.btn-primary:not(:disabled):hover { background: #4a93e3; }
 .btn-danger { color: #ff9195; }
 .btn-small { padding: 2px 8px; }
 .btn-row { display: flex; flex-wrap: wrap; gap: 4px; }
@@ -245,7 +245,7 @@ body.resizing canvas { pointer-events: none; }
 .grad-bar { position: relative; height: 34px; margin: 2px 8px 8px; }
 .grad-fill { position: absolute; left: 0; right: 0; top: 0; height: 20px; border: 1px solid var(--line-2); border-radius: 0; cursor: copy; touch-action: none; }
 .grad-stop { position: absolute; top: 14px; width: 16px; height: 18px; margin-left: -8px; padding: 0; border: 2px solid #fff; border-radius: 0; box-shadow: 0 0 0 1px #000; cursor: ew-resize; touch-action: none; }
-.grad-stop.active { border-color: var(--accent); box-shadow: 0 0 0 1px #000, 0 0 0 3px rgba(242, 178, 76, 0.45); z-index: 1; }
+.grad-stop.active { border-color: var(--accent); box-shadow: 0 0 0 1px #000, 0 0 0 3px rgba(47, 127, 214, 0.45); z-index: 1; }
 .grad-stop-row { display: flex; align-items: center; gap: 5px; margin-bottom: 6px; }
 .grad-stop-row .num-input { width: 40px; }
 .preset-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; margin: 4px 0 6px; }
@@ -317,7 +317,7 @@ body.dropping .dock .map-block { outline: 1px dashed var(--accent); outline-offs
 .tl-btn { flex: none; min-width: 26px; height: 22px; padding: 0 5px; border-radius: 0; background: var(--bg-3); border: 1px solid var(--line-2); font-size: 11px; }
 .tl-btn:hover { background: var(--bg-4); }
 .tl-play { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
-.tl-play:hover { background: #f8c367; }
+.tl-play:hover { background: #4a93e3; }
 .tl-sheet { flex: 1; min-height: 0; position: relative; overflow: hidden; }
 .tl-canvas { position: absolute; left: 0; top: 0; display: block; touch-action: none; }
 .tl-none { flex: none; }
@@ -405,7 +405,7 @@ body.dropping .dock .map-block { outline: 1px dashed var(--accent); outline-offs
 .palette-item.active kbd { color: var(--accent-ink); border-color: rgba(0, 0, 0, 0.3); }
 .palette-empty { padding: 14px; text-align: center; color: var(--text-3); }
 
-body.dropping::after { content: "Drop to import"; position: fixed; inset: 8px; z-index: 100; display: flex; align-items: center; justify-content: center; font-size: 20px; color: var(--accent); background: rgba(242, 178, 76, 0.08); border: 2px dashed var(--accent); border-radius: 0; pointer-events: none; }
+body.dropping::after { content: "Drop to import"; position: fixed; inset: 8px; z-index: 100; display: flex; align-items: center; justify-content: center; font-size: 20px; color: var(--accent); background: rgba(47, 127, 214, 0.08); border: 2px dashed var(--accent); border-radius: 0; pointer-events: none; }
 
 @media (prefers-reduced-motion: reduce) { .toast { transition: none; } }
 
@@ -414,7 +414,7 @@ body.dropping::after { content: "Drop to import"; position: fixed; inset: 8px; z
 .tile-thumbs { display: flex; flex-wrap: wrap; gap: 2px; }
 .tile-thumb-btn { padding: 0; width: 28px; height: 28px; border: 1px solid var(--line-2); border-radius: 0; background: #16181c; cursor: pointer; display: grid; place-items: center; }
 .tile-thumb-btn:hover { border-color: #fff; }
-.tile-thumb-btn.active { border-color: #f2b24c; }
+.tile-thumb-btn.active { border-color: var(--accent); }
 .tile-thumb { display: block; }
 
 /* Timeline play range readout */
@@ -436,7 +436,7 @@ body.dropping::after { content: "Drop to import"; position: fixed; inset: 8px; z
 .keymap-row:nth-child(odd) { background: rgba(255, 255, 255, 0.025); }
 .keymap-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .keymap-key { font: 11px ui-monospace, Consolas, monospace; padding: 3px 6px; border: 1px solid var(--line-2); border-radius: 0; background: #16181c; color: inherit; cursor: pointer; text-align: center; }
-.keymap-key.changed { border-color: #f2b24c; color: #f2b24c; }
+.keymap-key.changed { border-color: var(--accent); color: var(--accent); }
 .keymap-key.listening { border-color: #7fc8f8; color: #7fc8f8; }
 
 /* Modifier cards in the side panel, after Blender's */
@@ -464,7 +464,7 @@ body.dropping::after { content: "Drop to import"; position: fixed; inset: 8px; z
 .tool-group-label { font-size: 10.5px; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.05em; }
 .tool-chips { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; }
 .tool-chip { display: flex; align-items: center; justify-content: space-between; gap: 4px; min-width: 0; padding: 4px 6px; background: var(--bg-3); border: 1px solid var(--line-2); border-radius: 0; color: var(--text); font-size: 12px; cursor: pointer; }
-.tool-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tool-chip span { flex: 1; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tool-chip kbd { flex: none; font-size: 9.5px; color: var(--text-3); background: none; border: 0; padding: 0; }
 .tool-chip:hover:not(:disabled) { background: var(--bg-4); border-color: var(--text-3); }
 .tool-chip.active { border-color: var(--accent); color: var(--accent); }
@@ -481,3 +481,49 @@ body.dropping::after { content: "Drop to import"; position: fixed; inset: 8px; z
 .tip-key { min-width: 18px; padding: 1px 5px; text-align: center; font: 600 10.5px ui-monospace, Consolas, monospace; color: var(--accent); background: var(--bg-3); border: 1px solid var(--line-2); border-bottom-width: 2px; }
 .tip-plus, .tip-or { font-size: 10px; color: var(--text-3); }
 .tip-body { color: var(--text-2); white-space: pre-line; }
+
+/* ───────── 3Doddle skin: bevelled controls and gradient bars, laid over the rules above ───────── */
+:root {
+  --btn: #3c3d40; --btn-hi: #46484c; --btn-lo: #2a2b2d; --bevel: #4b4d51; --head: #3a3b3e; --sep-hi: #47494d;
+  --top1: #36373a; --top2: #2e2f31; --bar1: #3e3f43; --bar2: #36373a;
+  --accent-hi: #4a93e3; --accent-edge: #1b4f8a; --accent-bevel: #5aa0ec; --chip-on: #284a70;
+}
+/* Raised buttons: a dark edge with a one-pixel highlight along the top, pressed flat. */
+.btn, .tool-chip, .opt-toggle, .tl-btn { background: var(--btn); border: 1px solid var(--line); box-shadow: inset 0 1px 0 var(--bevel); }
+.btn:not(:disabled):hover, .tool-chip:hover:not(:disabled), .opt-toggle:hover, .tl-btn:hover { background: var(--btn-hi); border-color: var(--line); }
+.btn:active, .tool-chip:active, .opt-toggle:active, .tl-btn:active { background: var(--btn-lo); box-shadow: none; }
+.btn-primary, .tl-play { background: var(--accent); border-color: var(--accent-edge); box-shadow: inset 0 1px 0 var(--accent-bevel); color: #fff; }
+.btn-primary:not(:disabled):hover, .tl-play:hover { background: var(--accent-hi); }
+.tool-chip.active, .opt-toggle.active { background: var(--chip-on); border-color: var(--accent-edge); color: var(--text); }
+.seg-btn.active, .tool-btn.active { background: var(--accent); box-shadow: inset 0 0 0 1px var(--accent-edge), inset 0 1px 0 var(--accent-bevel); color: #fff; }
+.tool-btn:hover:not(.active) { background: var(--btn-hi); box-shadow: inset 0 0 0 1px var(--line-2); }
+/* Bars: title bar and view headers in gentle gradients, panels on the raised grey. */
+.titlebar { background: linear-gradient(var(--top1), var(--top2)); box-shadow: inset 0 1px 0 #414245; }
+.menu-btn { border: 1px solid transparent; }
+.menu-btn:hover, .menu-btn.open { background: var(--btn-hi); border-color: var(--line-2); }
+.pane-select, .pane-btn { background: linear-gradient(var(--bar1), var(--bar2)); border-color: var(--line); }
+.pane-select:hover, .pane-btn:hover { background: var(--btn-hi); border-color: var(--line-2); }
+.pane-header { opacity: 1; }
+.dock, .tl-bar, .uv-bar, .statusbar { background: var(--bg-2); }
+/* Tabs that look like tabs. */
+.dock-tabs { padding: 3px 3px 0; border-bottom: 1px solid var(--line-2); }
+.dock-tabs button { padding: 4px; background: var(--btn-lo); border: 1px solid var(--line); border-bottom: 0; margin-bottom: 0; }
+.dock-tabs button.active { background: var(--bg-2); border-color: var(--line-2); position: relative; top: 1px; font-weight: 400; }
+/* Section headers as solid bars. */
+.panel-section { border-bottom: 0; }
+.section-head { justify-content: flex-start; padding: 4px 6px; background: var(--head); border-top: 1px solid var(--sep-hi); color: var(--text); }
+.section-head:hover { background: var(--btn-hi); }
+.section-body { padding-top: 6px; }
+/* Inputs sunk into the panel. */
+.num-input, .field-select { background: #1f2022; border-color: var(--line); }
+.xyz .num-field:nth-child(1) .num-input { border-left: 2px solid var(--x); }
+.xyz .num-field:nth-child(2) .num-input { border-left: 2px solid var(--y); }
+.xyz .num-field:nth-child(3) .num-input { border-left: 2px solid var(--z); }
+/* Text as 3Doddle sets it: plain Segoe UI / Tahoma, tighter lines, smaller chrome text. */
+:root { --font: "Segoe UI", Tahoma, system-ui, -apple-system, sans-serif; }
+html, body { font: 12px/1.35 var(--font); }
+.titlebar, .menu-btn, .seg-btn, .opt-toggle { font-size: 11.5px; }
+.section-head h3 { font-size: 11.5px; letter-spacing: 0; }
+.statusbar { color: var(--text-2); }
+kbd, .tool-chip kbd { font: 11px "Segoe UI", Tahoma, sans-serif; color: var(--text-3); }
+.tool-chip kbd { font-size: 9.5px; }

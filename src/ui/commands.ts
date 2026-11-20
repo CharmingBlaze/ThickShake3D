@@ -319,6 +319,7 @@ export const TOOLS: { id: ToolId; label: string; key?: string; icon: string; gro
   { id: 'blob', label: 'Draw Shape', group: 'block', hint: 'Draw around any outline and it inflates into a rounded solid: a torso, a hand, a leaf, a rock.', icon: glyph('tool-shape-draw') },
   { id: 'pen', label: 'Pen Shape', group: 'block', hint: 'Draw an outline with curves, the way a vector pen does: click for a corner, drag for a curve, click the first point to close. Reshape it, then press Enter to inflate it into a rounded piece: a head, a hand, a body.', icon: glyph('tool-poly-draw') },
   { id: 'lathe', label: 'Lathe', group: 'block', hint: 'Draw half an outline, top to bottom, and it spins into a solid around the centre line: a torso, a head, a vase, a bottle.', icon: '<path d="M12 3v18" stroke-dasharray="2 2.5"/><path d="M12 4c5 0 7 3 5 7s2 5 1 7-3 2-6 2"/><path d="M12 4c-5 0-7 3-5 7s-2 5-1 7 3 2 6 2" opacity=".35"/>' },
+  { id: 'curve', label: 'Curve', group: 'block', hint: 'Draw a line, freehand, and it becomes the curve chosen in the Curves tab: a tube, ribbon, rope, chain, hair, vine, tree, lathe and more. Change its settings straight after to reshape it. Ctrl+wheel sets the thickness.', icon: '<path d="M3 18c3-9 6-12 9-7s6 2 9-7"/><circle cx="3" cy="18" r="1.6" fill="currentColor"/><circle cx="12" cy="11" r="1.6" fill="currentColor"/><circle cx="21" cy="4" r="1.6" fill="currentColor"/>' },
   { id: 'sculpt', label: 'Sculpt', key: 'C', group: 'model', hint: 'Push the surface around with a soft brush: Grab, Inflate, Smooth, Flatten or Pinch. Shift reverses, Ctrl smooths, Ctrl+wheel resizes.', icon: '<path d="M15 3l6 6-9 9-7 3 3-7z"/><path d="M12 6l6 6"/>' },
   { id: 'capsule', label: 'Capsule', group: 'block', hint: DRAW_HINT, icon: '<rect x="7" y="3" width="10" height="18" rx="5"/><path d="M7 9c2 1.5 8 1.5 10 0M7 15c2 1.5 8 1.5 10 0"/>' },
   { id: 'tapered', label: 'Tapered', group: 'block', hint: DRAW_HINT, icon: '<ellipse cx="12" cy="6" rx="4.5" ry="2"/><path d="M7.5 6L5 18c0 1.7 3.1 3 7 3s7-1.3 7-3L16.5 6"/>' },
@@ -1064,6 +1065,7 @@ export const WORKSPACE_LIST: { id: Workspace; label: string; key: string }[] = [
   { id: 'tiles', label: 'Tile Editor', key: 'Ctrl+7' },
   { id: 'rig', label: 'Rigging', key: 'Ctrl+3' },
   { id: 'animate', label: 'Animation', key: 'Ctrl+4' },
+  { id: 'curves', label: 'Curves', key: 'Ctrl+8' },
 ];
 for (const { id, label, key } of WORKSPACE_LIST) {
   def(`workspace.${id}`, `${label} Workspace`, () => app.setWorkspace(id), { key, checked: () => ed.workspace === id });

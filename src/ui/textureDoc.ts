@@ -149,23 +149,33 @@ export function pushLive(d: TexDoc) {
  * Save the pixels into the texture as one undo step: the combined image, and the layers when there's more than one.
  * `extra` makes other changes in the same step.
  */
-export function commitDoc(d: TexDoc, label: string, extra?: (m: Model) => void) {
-  for (const l of d.layers) l.ctx.putImageData(l.img, 0, 0);
-  composite(d);
-  const url = d.canvas.toDataURL('image/png');
-  const single = d.layers.length === 1 && d.layers[0].visible && d.layers[0].opacity === 1;
-  const layers: TexLayer[] | undefined = single ? undefined : d.layers.map((l) => ({ name: l.name, url: l.canvas.toDataURL('image/png'), opacity: l.opacity, visible: l.visible }));
-  d.url = url;
+export function commitDoc(d: TexDoc, label: string, extra?: (m: Model) => void) { commitDocs([d], label, extra); }
+
+/** Save several textures' pixels as one undo step, as commitDoc does for one. */
+export function commitDocs(ds: TexDoc[], label: string, extra?: (m: Model) => void) {
+  const saved = ds.map((d) => {
+    for (const l of d.layers) l.ctx.putImageData(l.img, 0, 0);
+    composite(d);
+    const url = d.canvas.toDataURL('image/png');
+    const single = d.layers.length === 1 && d.layers[0].visible && d.layers[0].opacity === 1;
+    const layers: TexLayer[] | undefined = single ? undefined : d.layers.map((l) => ({ name: l.name, url: l.canvas.toDataURL('image/png'), opacity: l.opacity, visible: l.visible }));
+    d.url = url;
+    return { d, url, layers };
+  });
   ed.transact(label, (m) => {
-    const t = m.textures.find((x) => x.id === d.texId);
-    if (!t) return;
-    t.url = url;
-    t.rev = (t.rev ?? 0) + 1;
-    if (layers) t.layers = layers; else delete t.layers;
+    for (const { d, url, layers } of saved) {
+      const t = m.textures.find((x) => x.id === d.texId);
+      if (!t) continue;
+      t.url = url;
+      t.rev = (t.rev ?? 0) + 1;
+      if (layers) t.layers = layers; else delete t.layers;
+    }
     extra?.(m);
   });
-  liveTextures.set(d.texId, d.canvas);
-  app.vp?.sg.showLiveTexture(d.texId);
+  for (const { d } of saved) {
+    liveTextures.set(d.texId, d.canvas);
+    app.vp?.sg.showLiveTexture(d.texId);
+  }
   notify();
 }
 

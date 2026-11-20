@@ -12,7 +12,10 @@ import { applyEase, applyPose, bakeClip, capturePose, copyKeys, deleteKeys, EASE
 import { deformPoints, lathe, partPrim, PARTS, inflateParts, pathLength, PEN_SECTIONS, penFrame, profileAt, quadSilhouette, resamplePath, ROUND_PROFILE, silhouette, tube } from '../src/core/organic';
 import { bezierAt, insertAnchor, nearestOnOutline, sampleOutline, type PenAnchor } from '../src/core/pen';
 import { splitOutline } from '../src/core/limbs';
-import { blendPixel, brushFootprint, clearRegion, clipRect, copyRegion, flipRegion, floodFill, getPixel, keepInside, linePixels, mapToPalette, pasteRegion, rectPixels, reducePalette, remapPixels, replaceColor, seamTwins, strokeLine, usedColors, uvAtPoint, worldPerTexel, type Brush, type Pixels, type RGBA } from '../src/core/paint';
+import { blendPixel, brushFootprint, clearRegion, clipRect, copyRegion, flipRegion, floodFill, getPixel, keepInside, linePixels, mapToPalette, pasteRegion, rectPixels, reducePalette, remapPixels, replaceColor, padPainted, projectTri, strokeLine, usedColors, uvAtPoint, uvCoverage, type Brush, type PaintTri, type Pixels, type RGBA } from '../src/core/paint';
+import { trimHistory } from '../src/core/editor';
+import * as THREE from 'three';
+import { TriTree } from '../src/core/bvh';
 import { autotileSlot, autotileTemplate, BLOB_MASKS, boxQuads, cellAt, cellCorners, cellsOnPlane, cubeBox, fitTileToFace, placeTileQuad, quadTileCounts, splitQuad, tileAtPixel, tileCounts, tileForCell, tileOfFace, tilePixels, tileUV, type TileBlock, type TileGrid, type TilePlane } from '../src/core/tiles';
 import { addLimb, addStarter, deformPiece, fusePieces, limbFrame, radialPieces, reducePiece, twinOf, alignPieces, arrayPieces, colorsToMaterials, dropPieces, mirrorPiece, pieceBounds, scaleFigure, snapPieces } from '../src/core/blockout';
 import { bounds, cross, dist, dot, norm, sub } from '../src/core/geom';
@@ -786,24 +789,37 @@ describe('painting pixels', () => {
     expect(uvAtPoint(m, fi, [50, 0, 50])).toBeNull();
   });
 
-  it('carries a dab across a UV seam to the faces the brush reaches', () => {
-    const m = modelOf(prims.box(2, 2, 2));
-    // The top face, and a point on it just inside its edge toward +X.
-    const top = m.faces.findIndex((f) => f.v.every((v) => m.verts[v].p[1] > 0.99));
-    const side = m.faces.findIndex((f) => f.v.every((v) => m.verts[v].p[0] > 0.99));
-    const p: V3 = [0.95, 1, 0];
-    const all = m.faces.map((_, i) => i);
-    const twins = seamTwins(m, top, p, 0.2, all);
-    // Only the +X side is within reach; the ball reaches 0.2 âˆ’ 0.05 past the edge down it, so its circle there is smaller.
-    expect(twins.map((t) => t.face)).toEqual([side]);
-    expect(twins[0].radius).toBeLessThan(0.2);
-    expect(twins[0].radius).toBeGreaterThan(0.1);
-    // The twin is near the side's own UV square: straight across from p, on the side's plane, is its top edge.
-    const onSide = uvAtPoint(m, side, [1, 0.999, 0])!;
-    expect(Math.hypot(twins[0].uv[0] - onSide[0], twins[0].uv[1] - onSide[1])).toBeLessThan(0.02);
-    // Far from any edge, nothing else is reached; and a texel's size comes from the face's size on the texture.
-    expect(seamTwins(m, top, [0, 1, 0], 0.2, all)).toEqual([]);
-    expect(worldPerTexel(m, top, 64, 64)).toBeGreaterThan(0);
+  it('paints a brush seen on screen onto the texels under it, round however the texture is stretched', () => {
+    // A unit square seen straight on, 10 screen pixels per unit, on a 16×8 texture: texels are wider than tall on screen.
+    const tris: PaintTri[] = [
+      { uv: [[0, 0], [1, 0], [1, 1]], p: [[0, 0, 0], [1, 0, 0], [1, 1, 0]] },
+      { uv: [[0, 0], [1, 1], [0, 1]], p: [[0, 0, 0], [1, 1, 0], [0, 1, 0]] },
+    ];
+    const project = (q: V3) => ({ x: q[0] * 10, y: q[1] * 10, w: 1, d: q[2] });
+    const hits = new Map<number, number>();
+    const soft: Brush = { size: 4, shape: 'soft', opacity: 1, hardness: 1, erase: false };
+    for (const t of tris) projectTri(t, 16, 8, project, () => true, 5, 5, 2, soft, (x, y, want) => hits.set(y * 16 + x, want));
+    // A circle of 2 pixels is 0.2 units: 3.2 texels across but only 1.6 down.
+    expect(hits.has(4 * 16 + 8)).toBe(true);
+    expect(hits.has(4 * 16 + 10)).toBe(true);
+    expect(hits.has(6 * 16 + 8)).toBe(false);
+    expect(hits.has(4 * 16 + 12)).toBe(false);
+    // Hidden spots take no paint, and a brush off the triangle reaches nothing.
+    let n = 0;
+    projectTri(tris[0], 16, 8, project, () => false, 5, 5, 2, soft, () => n++);
+    projectTri(tris[0], 16, 8, project, () => true, 50, 50, 2, soft, () => n++);
+    expect(n).toBe(0);
+  });
+
+  it('spreads painted pixels into unused texture space only', () => {
+    const img = blank(4, 1);
+    const used = uvCoverage(4, 1, [[[0, 0], [0.5, 0], [0.5, 1]], [[0, 0], [0.5, 1], [0, 1]]]);
+    expect([...used]).toEqual([1, 1, 0, 0]);
+    blendPixel(img, 1, 0, red);
+    padPainted(img, used, [1], 1);
+    expect(alphaAt(img, 2, 0)).toBe(255);
+    expect(alphaAt(img, 3, 0)).toBe(0);
+    expect(alphaAt(img, 0, 0)).toBe(0);
   });
 
   it('copies, pastes and flips regions, and keeps painting inside a selection', () => {
@@ -2364,6 +2380,84 @@ describe('undo snapshots of textures', () => {
     m.textures[0].layers![0].url = 'data:new';
     expect(snap.textures[0].url).toBe('data:old');
     expect(snap.textures[0].layers![0].url).toBe('data:old');
+  });
+});
+
+describe('triangle tree', () => {
+  // Same seeded numbers every run.
+  let seed = 7;
+  const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647) * 2 - 1;
+
+  it('returns no hits, instead of looping forever, when there are no triangles', () => {
+    const tree = new TriTree(new Float32Array(0), new Int32Array(0));
+    expect(tree.hits([0, 0, 5], [0, 0, -1], false, true)).toEqual([]);
+    expect(tree.hits([0, 0, 5], [0, 0, -1], true, false)).toEqual([]);
+  });
+
+  it('finds the same hits as testing every triangle', () => {
+    const n = 400;
+    const P = new Float32Array(n * 9);
+    for (let i = 0; i < n; i++) {
+      const c = [rnd() * 5, rnd() * 5, rnd() * 5];
+      for (let j = 0; j < 9; j++) P[i * 9 + j] = c[j % 3] + rnd() * 0.6;
+    }
+    const tris = Int32Array.from({ length: n * 3 }, (_, i) => i);
+    const tree = new TriTree(P, tris);
+    const slow = (o: V3, d: V3, cull: boolean) => {
+      const out: number[] = [];
+      for (let t = 0; t < n; t++) {
+        const r = new THREE.Ray(new THREE.Vector3(...o), new THREE.Vector3(...d));
+        const v = (k: number) => new THREE.Vector3(P[t * 9 + k * 3], P[t * 9 + k * 3 + 1], P[t * 9 + k * 3 + 2]);
+        const hit = r.intersectTriangle(v(0), v(1), v(2), cull, new THREE.Vector3());
+        if (hit) out.push(t);
+      }
+      return out.sort((x, y) => x - y);
+    };
+    let total = 0;
+    for (let k = 0; k < 60; k++) {
+      const o: V3 = [rnd() * 8, rnd() * 8, rnd() * 8];
+      // Aimed at a triangle's middle, so most rays hit something.
+      const t = Math.floor(((rnd() + 1) / 2) * n) % n;
+      const mid = [0, 1, 2].map((a) => (P[t * 9 + a] + P[t * 9 + 3 + a] + P[t * 9 + 6 + a]) / 3);
+      const d = new THREE.Vector3(mid[0] - o[0], mid[1] - o[1], mid[2] - o[2]).normalize();
+      const dir: V3 = [d.x, d.y, d.z];
+      for (const cull of [false, true]) {
+        const all = tree.hits(o, dir, cull, true);
+        expect(all.map((h) => h.tri).sort((x, y) => x - y)).toEqual(slow(o, dir, cull));
+        all.slice(1).forEach((h, i) => expect(h.t).toBeGreaterThanOrEqual(all[i].t));
+        const near = tree.hits(o, dir, cull, false);
+        expect(near[0]?.t).toBe(all[0]?.t);
+        total += all.length;
+      }
+    }
+    // The rays did hit things, so the comparison means something.
+    expect(total).toBeGreaterThan(20);
+  });
+});
+
+describe('undo memory', () => {
+  const step = (url: string) => {
+    const m = emptyModel();
+    m.textures.push({ id: 1, name: 't', url, width: 1, height: 1 });
+    return { label: 'Paint', model: m, sel: { verts: [], faces: [], edges: [], bones: [], mode: 'face' as const } };
+  };
+
+  it('drops the oldest steps once their images pass the budget, keeping the newest', () => {
+    // Four strokes, each a new 1000-character image; the current model has a fifth.
+    const stack = ['a', 'b', 'c', 'd'].map((ch) => step(ch.repeat(1000)));
+    const current = step('e'.repeat(1000)).model;
+    expect(trimHistory(stack, current, 3500)).toBe(2);
+    expect(stack.map((e) => e.model.textures[0].url[0])).toEqual(['c', 'd']);
+    // However small the budget, the newest step stays.
+    trimHistory(stack, current, 0);
+    expect(stack.length).toBe(1);
+  });
+
+  it('counts an image shared by many steps once', () => {
+    const shared = 'x'.repeat(1000);
+    const stack = [step(shared), step(shared), step(shared)];
+    expect(trimHistory(stack, step(shared).model, 2000)).toBe(0);
+    expect(stack.length).toBe(3);
   });
 });
 

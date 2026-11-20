@@ -1,32 +1,81 @@
 // Screen-space picking against the current display positions.
 import * as THREE from 'three';
 import { ed } from '../core/editor';
+import { TriTree } from '../core/bvh';
 import { edgeKey, triangulateFace } from '../core/geom';
+import type { V3 } from '../core/types';
 import type { Pane } from './pane';
 import type { SceneGraph } from './scene';
 
 export interface PickHit { face: number; point: THREE.Vector3; dist: number }
 
-const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3(), out = new THREE.Vector3();
+const a = new THREE.Vector3(), b = new THREE.Vector3(), cc = new THREE.Vector3(), out = new THREE.Vector3();
 
-export function pickFace(pane: Pane, sg: SceneGraph, px: number, py: number, includeBack: boolean): PickHit | null {
+/**
+ * The pickable triangles, as a tree for quick ray tests. A tree costs about as much to build as eight picks without
+ * one, so it is built on the eighth pick of the same positions: a drag that reshapes the model between picks never
+ * spends more than twice what it would have, and anything picked often, like hovering, gets the tree.
+ */
+let cache: { key: string; P: Float32Array; version: number; tris: Int32Array; faces: Int32Array; tree: TriTree | null; uses: number; sources: Set<ArrayLike<number>> } | null = null;
+
+function pickable(sg: SceneGraph) {
   const m = ed.model;
   const P = ed.displayPositions();
-  const ray = pane.ray(px, py);
-  let best: PickHit | null = null;
   const hidden = new Set(m.groups.filter((g) => !g.visible || g.locked).map((g) => g.id));
-  for (const r of sg.groups.values()) {
-    if (hidden.has(r.id)) continue;
-    const { corners, cornerFace } = r;
-    for (let i = 0; i < corners.length; i += 3) {
-      a.fromArray(P, corners[i] * 3); b.fromArray(P, corners[i + 1] * 3); c.fromArray(P, corners[i + 2] * 3);
-      const hit = ray.intersectTriangle(a, b, c, !includeBack, out);
-      if (!hit) continue;
-      const d = hit.distanceTo(ray.origin);
-      if (!best || d < best.dist) best = { face: cornerFace[i], point: hit.clone(), dist: d };
-    }
+  const groups = [...sg.groups.values()].filter((r) => !hidden.has(r.id));
+  const key = groups.map((r) => `${r.id}:${r.corners.length}`).join(',');
+  if (cache && cache.key === key && cache.P === P && cache.version === ed.posVersion && groups.every((r) => cache!.sources.has(r.corners))) {
+    if (!cache.tree && ++cache.uses >= 8) cache.tree = new TriTree(P, cache.tris);
+    return cache;
   }
-  return best;
+  let n = 0;
+  for (const r of groups) n += r.corners.length;
+  const tris = new Int32Array(n), faces = new Int32Array(n / 3);
+  let o = 0;
+  for (const r of groups) {
+    tris.set(r.corners, o);
+    for (let i = 0; i < r.corners.length; i += 3) faces[(o + i) / 3] = r.cornerFace[i];
+    o += r.corners.length;
+  }
+  cache = { key, P, version: ed.posVersion, tris, faces, tree: null, uses: 1, sources: new Set(groups.map((r) => r.corners)) };
+  return cache;
+}
+
+/** Hits along the ray through (px, py): the nearest only, or all of them nearest first. */
+function rayHits(pane: Pane, sg: SceneGraph, px: number, py: number, cullBack: boolean, all: boolean) {
+  const ray = pane.ray(px, py);
+  const o: V3 = [ray.origin.x, ray.origin.y, ray.origin.z], d: V3 = [ray.direction.x, ray.direction.y, ray.direction.z];
+  const c = pickable(sg);
+  if (c.tree) return { ray, faces: c.faces, hits: c.tree.hits(o, d, cullBack, all) };
+  // Not worth a tree yet: test every triangle.
+  const P = c.P, T = c.tris;
+  const hits: { tri: number; t: number }[] = [];
+  for (let i = 0; i < T.length; i += 3) {
+    a.fromArray(P, T[i] * 3); b.fromArray(P, T[i + 1] * 3); cc.fromArray(P, T[i + 2] * 3);
+    const hit = ray.intersectTriangle(a, b, cc, cullBack, out);
+    if (!hit) continue;
+    const t = hit.distanceTo(ray.origin);
+    if (all) hits.push({ tri: i / 3, t });
+    else if (!hits.length || t < hits[0].t) hits[0] = { tri: i / 3, t };
+  }
+  if (all) hits.sort((x, y) => x.t - y.t);
+  return { ray, faces: c.faces, hits };
+}
+
+export function pickFace(pane: Pane, sg: SceneGraph, px: number, py: number, includeBack: boolean): PickHit | null {
+  const { ray, faces, hits } = rayHits(pane, sg, px, py, !includeBack, false);
+  const h = hits[0];
+  return h ? { face: faces[h.tri], point: ray.at(h.t, new THREE.Vector3()), dist: h.t } : null;
+}
+
+/** The middle of the mesh under the mouse: halfway between where the ray goes in and where it next comes out. */
+export function pickInside(pane: Pane, sg: SceneGraph, px: number, py: number): THREE.Vector3 | null {
+  const { ray, hits } = rayHits(pane, sg, px, py, false, true);
+  const ds = hits.map((h) => h.t);
+  // Hits on a shared edge count twice; the exit is the first hit clearly past the entry.
+  const exit = ds.find((d) => d > ds[0] + 1e-5);
+  if (exit === undefined) return null;
+  return ray.at((ds[0] + exit) / 2, new THREE.Vector3());
 }
 
 /** Is a world point hidden behind the surface, from this pane's view? */

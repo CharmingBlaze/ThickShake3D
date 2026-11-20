@@ -14,7 +14,7 @@ const ck = (f: number, c: number): Corner => `${f}:${c}`;
 const parse = (k: Corner) => k.split(':').map(Number) as [number, number];
 
 export type UVSelectMode = 'vertex' | 'edge' | 'face' | 'island';
-const SEL = '#f2b24c';
+const SEL = '#3fe05a';
 const SEAM = '#ff5d5d';
 
 /** Scale handles around the selection, with the opposite side's position used as the pivot. */
@@ -50,6 +50,8 @@ export class UVEditor {
   private checker: CanvasPattern | null = null;
   private cache: Analysis | null = null;
   private mouse = { x: 0, y: 0, inside: false };
+  /** The scale handle under the mouse, for highlighting and the resize cursor. */
+  private hotHandle: string | null = null;
   // Display options.
   showImage = true;
   showGrid = true;
@@ -147,14 +149,17 @@ export class UVEditor {
   }
   get workingSize() { return this.densitySize(); }
 
-  private size() { return Math.min(this.cv.clientWidth, this.cv.clientHeight) * this.zoom; }
+  /** The canvas size, read once per draw: reading clientWidth for every point made big layouts freeze. */
+  private dims: { w: number; h: number } | null = null;
+  private wh() { return this.dims ?? { w: this.cv.clientWidth, h: this.cv.clientHeight }; }
+  private size() { const { w, h } = this.wh(); return Math.min(w, h) * this.zoom; }
   toScreen(u: number, v: number): [number, number] {
-    const s = this.size();
-    return [this.cv.clientWidth / 2 + this.panX + (u - 0.5) * s, this.cv.clientHeight / 2 + this.panY + (v - 0.5) * s];
+    const { w, h } = this.wh(), s = Math.min(w, h) * this.zoom;
+    return [w / 2 + this.panX + (u - 0.5) * s, h / 2 + this.panY + (v - 0.5) * s];
   }
   private toUV(x: number, y: number): V2 {
-    const s = this.size();
-    return [(x - this.cv.clientWidth / 2 - this.panX) / s + 0.5, (y - this.cv.clientHeight / 2 - this.panY) / s + 0.5];
+    const { w, h } = this.wh(), s = Math.min(w, h) * this.zoom;
+    return [(x - w / 2 - this.panX) / s + 0.5, (y - h / 2 - this.panY) / s + 0.5];
   }
 
   // ---------- analysis ----------
@@ -181,6 +186,10 @@ export class UVEditor {
 
   // ---------- drawing ----------
   draw() {
+    try { this.drawFrame(); } finally { this.dims = null; }
+  }
+
+  private drawFrame() {
     const cv = this.cv;
     const parent = cv.parentElement!;
     const W = parent.clientWidth, H = parent.clientHeight;
@@ -190,6 +199,7 @@ export class UVEditor {
       cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
       cv.style.width = `${W}px`; cv.style.height = `${H}px`;
     }
+    this.dims = { w: cv.clientWidth, h: cv.clientHeight };
     const g = this.g;
     g.setTransform(dpr, 0, 0, dpr, 0, 0);
     g.fillStyle = '#1b1e22'; g.fillRect(0, 0, W, H);
@@ -212,7 +222,7 @@ export class UVEditor {
 
     if (this.drag?.kind === 'box') {
       const d = this.drag;
-      g.strokeStyle = SEL; g.fillStyle = 'rgba(242,178,76,.12)'; g.setLineDash([4, 3]); g.lineWidth = 1;
+      g.strokeStyle = SEL; g.fillStyle = 'rgba(63,224,90,.12)'; g.setLineDash([4, 3]); g.lineWidth = 1;
       g.fillRect(Math.min(d.x0, d.x1), Math.min(d.y0, d.y1), Math.abs(d.x1 - d.x0), Math.abs(d.y1 - d.y0));
       g.strokeRect(Math.min(d.x0, d.x1) + 0.5, Math.min(d.y0, d.y1) + 0.5, Math.abs(d.x1 - d.x0), Math.abs(d.y1 - d.y0));
       g.setLineDash([]);
@@ -266,7 +276,7 @@ export class UVEditor {
         fill = `hsla(${220 * (1 - t)}, 75%, 52%, .55)`;
       }
       if (this.showOverlap && a.overlap.has(fi)) fill = 'rgba(232,85,90,.42)';
-      if (this.mode !== 'vertex' && this.isFaceSelected(fi)) fill = 'rgba(242,178,76,.32)';
+      if (this.mode !== 'vertex' && this.isFaceSelected(fi)) fill = 'rgba(63,224,90,.32)';
       if (!fill) continue;
       this.facePath(fi);
       g.fillStyle = fill;
@@ -354,6 +364,15 @@ export class UVEditor {
     };
   }
 
+  /** The scale handle at a screen point, with a generous reach so it's easy to grab. */
+  private handleAt(x: number, y: number) {
+    const l = this.handleLayout();
+    if (!l) return null;
+    let best: (typeof l.handles)[number] | null = null, bd = 10;
+    for (const p of l.handles) { const d = Math.max(Math.abs(x - p.x), Math.abs(y - p.y)); if (d < bd) { bd = d; best = p; } }
+    return best && { ...best, l };
+  }
+
   private drawHandles() {
     const l = this.handleLayout();
     if (!l) return;
@@ -364,10 +383,12 @@ export class UVEditor {
     g.beginPath(); g.moveTo(l.cx, l.y0); g.lineTo(l.rot.x, l.rot.y); g.stroke();
     g.fillStyle = '#1b1e22'; g.lineWidth = 1.5;
     g.beginPath(); g.arc(l.rot.x, l.rot.y, 5, 0, 7); g.fill(); g.stroke();
+    const active = this.drag?.kind === 'xf' && this.drag.op === 'scale' ? HANDLES.find((h0) => h0.ax === (this.drag as XfDrag).ax && h0.ay === (this.drag as XfDrag).ay)?.id : this.hotHandle;
     for (const p of l.handles) {
-      g.fillStyle = SEL;
-      g.fillRect(p.x - 3.5, p.y - 3.5, 7, 7);
-      g.strokeStyle = '#111'; g.lineWidth = 1; g.strokeRect(p.x - 3.5, p.y - 3.5, 7, 7);
+      const r = p.id === active ? 6 : 4.5;
+      g.fillStyle = p.id === active ? '#ffffff' : SEL;
+      g.fillRect(p.x - r, p.y - r, r * 2, r * 2);
+      g.strokeStyle = '#111'; g.lineWidth = 1; g.strokeRect(p.x - r, p.y - r, r * 2, r * 2);
     }
   }
 
@@ -669,7 +690,7 @@ export class UVEditor {
     renderInto(this.fields, () => {
       const box = this.bbox();
       if (!box) return h('span', { class: 'muted small' }, 'Select UVs to edit numerically');
-      const field = (label: string, value: number, title: string, min: number | undefined, apply: (o: V2, b: NonNullable<typeof box>, v: number) => V2) => {
+      const field = (label: string, value: number, title: string, min: number | undefined, apply: (o: V2, b: NonNullable<typeof box>, v: number) => V2, step = 0.002) => {
         let orig: Map<Corner, V2> | null = null;
         let base = box;
         const capture = () => {
@@ -682,11 +703,12 @@ export class UVEditor {
           ed.emit('topology');
         };
         return numField({
-          label, value, step: 0.002, min, digits: 3, title,
+          label, value, step, min, digits: label === '%' ? 1 : 3, title,
           onScrubStart: () => { capture(); ed.begin(`UV ${label}`); },
           onInput: set,
           onScrubEnd: () => { ed.commit(); ed.emitAll(); },
-          onChange: (v) => { capture(); ed.begin(`UV ${label}`); set(v); ed.commit(); ed.emitAll(); },
+          // Enter and the change on blur both commit: measuring from the UVs as first captured makes a repeat a no-op, so % can't apply twice.
+          onChange: (v) => { if (!orig) capture(); ed.begin(`UV ${label}`); set(v); ed.commit(); ed.emitAll(); },
         });
       };
       const cx = (b: typeof box) => (b.a + b.c) / 2, cy = (b: typeof box) => (b.b + b.d) / 2;
@@ -695,6 +717,7 @@ export class UVEditor {
         field('V', cy(box), 'Vertical centre of the selection', undefined, (o, b, v) => [o[0], o[1] + v - cy(b)]),
         field('W', box.c - box.a, 'Width of the selection', 0, (o, b, v) => [cx(b) + (o[0] - cx(b)) * (v / Math.max(b.c - b.a, 1e-9)), o[1]]),
         field('H', box.d - box.b, 'Height of the selection', 0, (o, b, v) => [o[0], cy(b) + (o[1] - cy(b)) * (v / Math.max(b.d - b.b, 1e-9))]),
+        field('%', 100, 'Scale the selection about its centre, keeping its shape. Also + and - keys (Shift for fine steps)', 0, (o, b, v) => [cx(b) + (o[0] - cx(b)) * v / 100, cy(b) + (o[1] - cy(b)) * v / 100], 0.5),
       ];
     });
   }
@@ -737,19 +760,24 @@ export class UVEditor {
       cv.focus({ preventScroll: true });
       const { x, y } = pos(e);
       if (e.button === 2 && this.drag?.kind === 'xf') { this.cancelDrag(); return; }
+      // A handle wins over Alt-panning: Alt on a handle scales about the centre instead.
+      const hh = e.button === 0 && !e.shiftKey && !e.ctrlKey ? this.handleAt(x, y) : null;
+      if (hh) { this.startXf(x, y, 'scale', hh.ax, hh.ay, e.altKey); return; }
       if (e.button === 1 || e.button === 2 || e.altKey) { this.drag = { kind: 'pan', x, y }; return; }
       if (e.button !== 0) return;
       const add = e.shiftKey, sub = e.ctrlKey;
       if (!add && !sub) {
         const l = this.handleLayout();
-        if (l) {
-          if (Math.hypot(x - l.rot.x, y - l.rot.y) < 9) { this.startXf(x, y, 'rotate'); return; }
-          for (const p of l.handles) {
-            if (Math.abs(x - p.x) < 7 && Math.abs(y - p.y) < 7) { this.startXf(x, y, 'scale', p.ax, p.ay); return; }
-          }
-        }
+        if (l && Math.hypot(x - l.rot.x, y - l.rot.y) < 10) { this.startXf(x, y, 'rotate'); return; }
       }
-      const hit = this.pickCorners(x, y);
+      let hit = this.pickCorners(x, y);
+      const box = this.handleLayout();
+      const inSelBox = !!box && x > box.x0 && x < box.x1 && y > box.y0 && y < box.y1;
+      // In vertex/edge mode a click inside a face, away from the selection, grabs that face instead of doing nothing.
+      if (!hit.length && !inSelBox && (this.mode === 'vertex' || this.mode === 'edge')) {
+        const fi = this.faceAt(x, y);
+        if (fi !== null) hit = ed.model.faces[fi].v.map((_, i) => ck(fi, i));
+      }
       if (hit.length && !add && !sub) {
         if (!hit.every((k) => this.sel.has(k))) {
           this.sel.clear();
@@ -760,15 +788,21 @@ export class UVEditor {
         return;
       }
       // Dragging inside the selection's box moves it, even from a gap between faces.
-      const inner = this.handleLayout();
-      if (inner && !add && !sub && !hit.length && x > inner.x0 && x < inner.x1 && y > inner.y0 && y < inner.y1) { this.startXf(x, y, 'move'); return; }
+      if (inSelBox && !add && !sub && !hit.length) { this.startXf(x, y, 'move'); return; }
       this.drag = { kind: 'box', x0: x, y0: y, x1: x, y1: y, add, sub };
     });
     window.addEventListener('pointermove', (e) => {
       const { x, y } = pos(e);
       const d = this.drag;
       if (!d) {
-        if (e.target === cv) { this.mouse = { x, y, inside: true }; this.draw(); }
+        if (e.target === cv) {
+          this.mouse = { x, y, inside: true };
+          const hh = this.handleAt(x, y);
+          this.hotHandle = hh?.id ?? null;
+          // The resize cursor follows the handle's direction on screen.
+          cv.style.cursor = !hh ? '' : !hh.ax ? 'ns-resize' : !hh.ay ? 'ew-resize' : (hh.x - hh.l.cx) * (hh.y - hh.l.cy) > 0 ? 'nwse-resize' : 'nesw-resize';
+          this.draw();
+        }
         return;
       }
       if (d.kind === 'pan') { this.panX += x - d.x; this.panY += y - d.y; d.x = x; d.y = y; }
@@ -830,6 +864,8 @@ export class UVEditor {
     else if (key === 'm') runCommand('uv.minimize');
     else if (key === 'w') this.weld();
     else if (key === 's') runCommand('uv.stitch');
+    else if (key === '=' || key === '+') this.scaleBy(e.shiftKey ? 1.01 : 1.1);
+    else if (key === '-' || key === '_') this.scaleBy(e.shiftKey ? 1 / 1.01 : 1 / 1.1);
     else if (key === 'r') this.rot90();
     else if (key === 'x') this.flip(0);
     else if (key === 'y') this.flip(1);
@@ -837,7 +873,19 @@ export class UVEditor {
     if (handled) { e.preventDefault(); e.stopPropagation(); }
   }
 
-  private startXf(x: number, y: number, op: XfDrag['op'], ax = 0, ay = 0) {
+  /** Grow or shrink the selection about its centre, as one undo step. */
+  private scaleBy(k: number) {
+    const b = this.bbox();
+    if (!b || this.sel.size < 2) return;
+    const c: V2 = [(b.a + b.c) / 2, (b.b + b.d) / 2];
+    ed.transact('UV scale', (m) => {
+      this.sel.forEach((key) => { const [f, i] = parse(key); const u = m.faces[f].uv[i]; m.faces[f].uv[i] = [c[0] + (u[0] - c[0]) * k, c[1] + (u[1] - c[1]) * k]; });
+    });
+    ed.emitAll();
+    this.draw();
+  }
+
+  private startXf(x: number, y: number, op: XfDrag['op'], ax = 0, ay = 0, fromCenter = false) {
     const orig = new Map<Corner, V2>();
     this.sel.forEach((k) => {
       const [f, i] = parse(k);
@@ -847,7 +895,7 @@ export class UVEditor {
     const b = this.bbox() ?? { a: 0, b: 0, c: 0, d: 0 };
     const center: V2 = [(b.a + b.c) / 2, (b.b + b.d) / 2];
     // Scale from the side opposite the handle.
-    const pivot: V2 = [center[0] - (ax * (b.c - b.a)) / 2, center[1] - (ay * (b.d - b.b)) / 2];
+    const pivot: V2 = fromCenter ? [...center] : [center[0] - (ax * (b.c - b.a)) / 2, center[1] - (ay * (b.d - b.b)) / 2];
     const grab: V2 = [center[0] + (ax * (b.c - b.a)) / 2, center[1] + (ay * (b.d - b.b)) / 2];
     this.drag = { kind: 'xf', op, x0: x, y0: y, moved: false, center, orig, ax, ay, pivot, grab };
   }
@@ -881,19 +929,25 @@ export class UVEditor {
       status(`Rotate  ${((a * 180) / Math.PI).toFixed(1)}°   (Ctrl: ${this.snap ? 'free' : '15° steps'})`);
     } else {
       const cur = this.toUV(x, y);
+      // Snapping puts the dragged side or corner on the grid, not the scale on round numbers.
+      if (snapping) { cur[0] = Math.round(cur[0] * this.grid) / this.grid; cur[1] = Math.round(cur[1] * this.grid) / this.grid; }
       const ratio = (axis: 0 | 1) => {
         const span = d.grab[axis] - d.pivot[axis];
         return Math.abs(span) > 1e-9 ? (cur[axis] - d.pivot[axis]) / span : 1;
       };
       let sx = d.ax ? ratio(0) : 1, sy = d.ay ? ratio(1) : 1;
       // Corners keep the aspect unless Shift frees it.
-      if (d.ax && d.ay && !e.shiftKey) { const k = Math.abs(sx) > Math.abs(sy) ? sx : sy; sx = sy = k; }
-      if (snapping) { sx = Math.round(sx * 10) / 10; sy = Math.round(sy * 10) / 10; }
+      // Projecting onto the corner's diagonal keeps a locked-aspect drag smooth, with no jump between axes.
+      if (d.ax && d.ay && !e.shiftKey) {
+        const gx = d.grab[0] - d.pivot[0], gy = d.grab[1] - d.pivot[1], len = gx * gx + gy * gy;
+        sx = sy = len > 1e-18 ? ((cur[0] - d.pivot[0]) * gx + (cur[1] - d.pivot[1]) * gy) / len : 1;
+      }
       d.orig.forEach((o, k) => {
         const [f, i] = parse(k);
         m.faces[f].uv[i] = [d.pivot[0] + (o[0] - d.pivot[0]) * sx, d.pivot[1] + (o[1] - d.pivot[1]) * sy];
       });
-      status(`Scale  ${sx.toFixed(3)} x ${sy.toFixed(3)}   (Shift on a corner: free aspect)`);
+      const nb = this.bbox();
+      status(`Scale  ${(sx * 100).toFixed(1)}% x ${(sy * 100).toFixed(1)}%   size ${nb ? (nb.c - nb.a).toFixed(3) : '-'} x ${nb ? (nb.d - nb.b).toFixed(3) : '-'}   (Shift on a corner: free aspect, Alt: from centre, Ctrl: ${this.snap ? 'free' : 'snap to grid'}, right click: cancel)`);
     }
     // UVs share no render state with positions, but the mesh buffers cache them.
     ed.emit('topology');

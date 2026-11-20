@@ -22,6 +22,7 @@ import { constraintsSection } from './constraintPanel';
 import { applyMirror, MIRROR_DEFAULTS, mirrorOf } from '../core/mirror';
 import { mirrorGroups } from '../core/symmetry';
 import { glyph } from './glyphs';
+import { CURVE_LABEL, DETAIL_PRESETS, LOOP_KINDS, PATH_OUTPUT_LABEL, type CurveKind, type CurveParams, type PathOutput } from '../core/curves';
 
 let budgetId = 'indie';
 export const panelState = { tab: 'scene' };
@@ -1438,9 +1439,94 @@ function auditPanel() {
   ];
 }
 
+// ---------- curves ----------
+/** Path outputs made of pieces placed along the line. */
+const SPACED_OUTPUTS: PathOutput[] = ['chain', 'cards', 'object-array', 'foliage', 'vine', 'tree'];
+
+/** What the Curve tool draws, and its settings. Changes also reshape the curve just drawn, until something else is edited. */
+function curvesPanel() {
+  const c = ed.curve;
+  const live = app.vp.curveLive;
+  const set = <K extends keyof CurveParams>(key: K, v: CurveParams[K]) => { ed.curve = { ...ed.curve, [key]: v }; app.vp.rebuildCurve(); refreshDock(); };
+  const num = (label: string, key: keyof CurveParams, min: number, max: number, step: number, title?: string) =>
+    numField({ label, value: c[key] as number, min, max, step, digits: step >= 1 ? 0 : step >= 0.01 ? 2 : 3, title, onChange: (v) => set(key, v as never) });
+  const pick = <K extends keyof CurveParams>(label: string, key: K, options: [CurveParams[K] & (string | number), string][]) =>
+    h('label', { class: 'form-row' }, label, select(c[key] as CurveParams[K] & (string | number), options, (v) => set(key, v)));
+  const tick = (label: string, key: keyof CurveParams, title?: string) => checkbox(label, c[key] as boolean, (v) => set(key, v as never), title);
+  const caps: [CurveParams['pathStartCap'], string][] = [['flat', 'Flat'], ['round', 'Round'], ['pointed', 'Pointed'], ['open', 'Open']];
+  const lathe = c.solid === 'lathe';
+  const path = c.kind === 'path';
+  const loop = LOOP_KINDS.includes(c.kind) && c.cyclic;
+  const spaced = path && !lathe && SPACED_OUTPUTS.includes(c.pathOutput);
+  const sweep = !lathe && !loop && (!path || ['tube', 'ribbon', 'rope', 'profile-sweep'].includes(c.pathOutput));
+  const kinds = (Object.keys(CURVE_LABEL) as CurveKind[]).map((k) => h('button', {
+    class: `shape-btn${c.kind === k ? ' active' : ''}`, 'aria-pressed': String(c.kind === k),
+    onclick: () => { ed.curve = { ...ed.curve, kind: k, cyclic: LOOP_KINDS.includes(k) }; if (ed.tool !== 'curve') runCommand('tool.curve'); app.vp.rebuildCurve(); refreshDock(); },
+  }, h('span', null, CURVE_LABEL[k])));
+  const parts = ed.model.groups.filter((g) => g.kind === 'mesh');
+  return [
+    section('Draw a curve',
+      h('div', { class: 'seg', role: 'group', 'aria-label': 'How to draw' }, ([['draw', 'Draw', 'Draw the line freehand'], ['pen', 'Pen', 'Place points like a vector pen: click for corners, drag for curves']] as const).map(([id, label, title]) =>
+        h('button', { class: `seg-btn${ed.curveInput === id ? ' active' : ''}`, 'aria-pressed': String(ed.curveInput === id), title, onclick: () => { ed.curveInput = id; if (ed.tool !== 'curve') runCommand('tool.curve'); ed.emit('tool'); refreshDock(); } }, label))),
+      h('div', { class: 'shape-grid' }, kinds),
+      h('p', { class: 'muted small' }, ed.tool !== 'curve' ? 'Pick what to make, then draw in a view.'
+        : live ? 'Change anything below to reshape the curve you just made.' + (ed.curveInput === 'pen' ? ' Keep adding and dragging points; double-click or Enter finishes.' : ' Drawing again starts a new one.')
+          : ed.curveInput === 'pen' ? 'Click for corners, drag for curves, click the first point to close. Keep adding and reshaping until you double-click or press Enter.'
+            : loop ? 'Draw around an outline; it closes by itself.' : 'Draw a line in any view. Ctrl+wheel sets the thickness.'),
+      ed.tool !== 'curve' ? button('Curve tool', () => runCommand('tool.curve'), { class: 'btn btn-primary' }) : null,
+    ),
+    section('Shape',
+      pick('Make', 'solid', [['extrude', 'Along the line'], ['lathe', 'Spin (lathe)']]),
+      pick('Line', 'curveType', [['catmull-rom', 'Smooth'], ['bezier', 'Bezier'], ['polyline', 'Straight segments']]),
+      h('label', { class: 'form-row', title: 'Low and Medium poly suit games. Sets the sides and rings below together.' }, 'Poly level',
+        select(c.resolution, [['low', 'Low poly'], ['medium', 'Medium poly'], ['high', 'High poly']], (v) => { ed.curve = { ...ed.curve, ...DETAIL_PRESETS[v] }; app.vp.rebuildCurve(); refreshDock(); })),
+      num('Radius', 'radius', 0.005, 10, 0.01, 'Thickness in metres. Ctrl+wheel over a view changes it.'),
+      lathe ? null : tick('Closed loop', 'cyclic', 'Join the end back to the start'),
+      c.kind === 'blob' && loop ? num('Inflation', 'blobInflation', 0, 2, 0.05) : null,
+      ['hair', 'hair-strip', 'rounded-hair', 'tapered-tube'].includes(c.kind) ? pick('Tip', 'tipStyle', [['pointed', 'Pointed'], ['square', 'Square']]) : null,
+    ),
+    lathe ? section('Lathe',
+      h('p', { class: 'muted small' }, 'Start on the centre line and draw half the outline; it spins around the view\'s up direction.'),
+      num('Sides', 'latheSegments', 3, 64, 1), num('Rings', 'latheProfileRings', 2, 128, 1), num('Smoothing', 'latheSmoothing', 0, 1, 0.05),
+      num('Angle', 'latheAngle', 15, 360, 5), tick('Close the ends', 'latheCaps'),
+    ) : null,
+    path && !lathe ? section('Path output',
+      pick('Output', 'pathOutput', (Object.keys(PATH_OUTPUT_LABEL) as PathOutput[]).map((k): [PathOutput, string] => [k, PATH_OUTPUT_LABEL[k]])),
+      num('Radius scale', 'pathRadiusScale', 0.05, 4, 0.05),
+      c.pathOutput === 'profile-sweep' ? pick('Profile', 'pathProfile', [['round', 'Round'], ['square', 'Square'], ['rectangle', 'Rectangle'], ['rail', 'Rail']]) : null,
+      c.pathOutput === 'object-array' ? h('label', { class: 'form-row' }, 'Part', select(c.pathSourceObject ?? -1, [[-1, 'Box'], ...parts.map((g): [number, string] => [g.id, g.name])], (v) => set('pathSourceObject', v < 0 ? null : v))) : null,
+      c.pathOutput === 'cards' ? pick('Card', 'cardShape', [['rect', 'Rectangle'], ['pointed', 'Leaf']]) : null,
+      ['cards', 'foliage', 'tree'].includes(c.pathOutput) ? tick('Crossed', 'pathCardCrossed', 'Two cards per spot, or fuller clusters') : null,
+      c.pathOutput === 'chain' ? tick('Alternate links', 'pathChainAlternating', 'Turn every other link a quarter') : null,
+    ) : null,
+    sweep ? section('Sweep',
+      c.kind !== 'ribbon' && c.kind !== 'hair-strip' ? num('Sides', 'pathRadialSegments', 3, 24, 1) : null,
+      num('Start scale', 'startScale', 0.02, 4, 0.05), num('End scale', 'endScale', 0.02, 4, 0.05),
+      num('Twist', 'twist', -1440, 1440, 5, 'Degrees from end to end'), num('Offset', 'pathOffset', -2, 2, 0.01, 'Slide sideways off the line'),
+      num('Width', 'profileWidth', 0.05, 8, 0.05), num('Height', 'profileHeight', 0.05, 8, 0.05),
+      c.cyclic ? null : pick('Start cap', 'pathStartCap', caps), c.cyclic ? null : pick('End cap', 'pathEndCap', caps),
+    ) : null,
+    spaced ? section('Spacing',
+      pick('Spread', 'pathDistributionMode', [['spacing', 'Exact gap'], ['fit', 'Fit to length'], ['count', 'Count']]),
+      c.pathDistributionMode === 'count' ? num('Count', 'pathCount', 1, 200, 1) : num('Gap', 'pathSpacing', 0.01, 8, 0.01),
+      num('Start padding', 'pathStartPadding', 0, 100, 0.05), num('End padding', 'pathEndPadding', 0, 100, 0.05),
+      num('Start scale', 'startScale', 0.02, 4, 0.05), num('End scale', 'endScale', 0.02, 4, 0.05),
+      num('Width', 'profileWidth', 0.05, 8, 0.05), num('Height', 'profileHeight', 0.05, 8, 0.05),
+      num('Rotation', 'pathRotation', -180, 180, 5), num('Random rotation', 'pathRandomRotation', 0, 180, 5), num('Random scale', 'pathRandomScale', 0, 1, 0.05),
+      tick('Alternate rotation', 'pathAlternateRotation'), tick('Mirror every other', 'pathMirrorAlternate'),
+      num('Seed', 'pathSeed', 1, 9999, 1, 'A different random layout'),
+    ) : null,
+    section('Texture',
+      pick('Fit', 'uvFit', [['tile', 'Tile (square texels)'], ['stretch', 'Stretch once']]),
+      num('Along', 'uvAlong', 0.01, 100, 0.1), num('Around', 'uvAround', 0.01, 100, 0.1),
+    ),
+  ];
+}
+
 // ---------- host ----------
 const TABS: [string, string, () => any][] = [
   ['block', 'Blockout', blockPanel],
+  ['curves', 'Curves', curvesPanel],
   ['scene', 'Scene', scenePanel],
   ['material', 'Material', materialPanel],
   ['rig', 'Rig', rigPanel],
@@ -1464,6 +1550,7 @@ export function refreshDock() {
     tabsEl.querySelectorAll('button').forEach((b) => {
       const on = (b as HTMLElement).dataset.tab === panelState.tab;
       if ((b as HTMLElement).dataset.tab === 'block') (b as HTMLElement).style.display = ed.workspace === 'block' ? '' : 'none';
+      if ((b as HTMLElement).dataset.tab === 'curves') (b as HTMLElement).style.display = ed.workspace === 'curves' ? '' : 'none';
       b.classList.toggle('active', on);
       b.setAttribute('aria-selected', String(on));
     });

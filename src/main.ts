@@ -350,8 +350,8 @@ let beforeBlock: { surface: boolean; mirror: boolean; wire: boolean; shading: Sh
 
 function setWorkspace(w: Workspace) {
   if (ed.workspace === 'animate' && w !== 'animate') { ed.tool = 'select'; ed.showWire = true; }
-  // Leaving Paint or Tiles puts their tools away.
-  if ((ed.tool === 'texpaint' && w !== 'paint') || (ed.tool === 'tile' && w !== 'tiles')) ed.tool = 'select';
+  // Leaving Paint, Tiles or Curves puts their tools away.
+  if ((ed.tool === 'texpaint' && w !== 'paint') || (ed.tool === 'tile' && w !== 'tiles') || (ed.tool === 'curve' && w !== 'curves')) ed.tool = 'select';
   if (ed.testPose && w !== 'rig') { ed.setTestPose(false); ed.tool = 'select'; }
   if (beforeBlock && w !== 'block') {
     ed.drawOnSurface = beforeBlock.surface;
@@ -394,8 +394,8 @@ function setWorkspace(w: Workspace) {
     case 'uv':
       ed.pose = false;
       vp.setLayout('single', persp);
-      // The checker shows stretching on parts with no picture yet; a part with one shows it.
-      persp.shading = texturedParts() ? 'pbr' : 'checker';
+      // The checker shows stretching only while no part has a material; once one does, show it.
+      persp.shading = ed.model.groups.some((g) => g.visible && g.material !== null) ? 'pbr' : 'checker';
       timelineVisible = false;
       app.showTab('material');
       if (ed.mode === 'bone') ed.setMode('face');
@@ -427,6 +427,15 @@ function setWorkspace(w: Workspace) {
       app.showTab('rig');
       ed.setMode('bone');
       ed.xray = false;
+      break;
+    case 'curves':
+      ed.pose = false;
+      vp.setLayout('quad');
+      persp.shading = 'pbr';
+      timelineVisible = false;
+      app.showTab('curves');
+      if (ed.mode === 'bone' || ed.mode === 'group') ed.setMode('face');
+      ed.tool = 'curve';
       break;
     case 'animate':
       ed.pose = true;

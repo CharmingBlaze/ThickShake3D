@@ -2,11 +2,12 @@
 import { edgeKey, parseEdge } from './geom';
 import { evalPose, skinInto, type BonePose } from './skeleton';
 import { type Clip, type Model, cloneModel, emptyModel } from './types';
+import { DEFAULT_CURVE, type CurveParams } from './curves';
 
 export type ChangeKind = 'topology' | 'geometry' | 'selection' | 'materials' | 'groups' | 'skeleton' | 'anim' | 'time' | 'tool' | 'view' | 'file' | 'history';
 export type SelMode = 'vertex' | 'edge' | 'face' | 'group' | 'bone';
-export type ToolId = 'select' | 'move' | 'rotate' | 'scale' | 'extrude' | 'vertex' | 'face' | 'box' | 'sphere' | 'geosphere' | 'cylinder' | 'cone' | 'pyramid' | 'plane' | 'torus' | 'limb' | 'part' | 'stroke' | 'blob' | 'pen' | 'lathe' | 'sculpt' | 'capsule' | 'tapered' | 'wedge' | 'stairs' | 'doorway' | 'joint' | 'ik' | 'paint' | 'loopcut' | 'knife' | 'texpaint' | 'tile' | 'bend';
-export type Workspace = 'block' | 'model' | 'uv' | 'paint' | 'tiles' | 'rig' | 'animate';
+export type ToolId = 'select' | 'move' | 'rotate' | 'scale' | 'extrude' | 'vertex' | 'face' | 'box' | 'sphere' | 'geosphere' | 'cylinder' | 'cone' | 'pyramid' | 'plane' | 'torus' | 'limb' | 'part' | 'stroke' | 'blob' | 'pen' | 'lathe' | 'sculpt' | 'capsule' | 'tapered' | 'wedge' | 'stairs' | 'doorway' | 'joint' | 'ik' | 'paint' | 'loopcut' | 'knife' | 'texpaint' | 'tile' | 'bend' | 'curve';
+export type Workspace = 'block' | 'model' | 'uv' | 'paint' | 'tiles' | 'rig' | 'animate' | 'curves';
 
 export interface OpParam { key: string; label: string; type: 'number' | 'bool' | 'choice'; value: any; min?: number; max?: number; step?: number; options?: [any, string][] }
 
@@ -20,9 +21,43 @@ export interface LastOp {
 }
 
 interface SelSnapshot { verts: number[]; faces: number[]; edges: string[]; bones: number[]; mode: SelMode; }
-interface HistoryEntry { label: string; model: Model; sel: SelSnapshot }
+interface HistoryEntry { label: string; model: Model; sel: SelSnapshot; /** Estimated bytes of its own geometry. */ geo?: number }
 
 const MAX_UNDO = 256;
+/** Undo history stops growing past about this much memory, dropping its oldest steps; images are the big part. */
+export const UNDO_BUDGET = 512 * 1024 * 1024;
+
+/** Roughly how many bytes a snapshot's geometry takes: everything but its images, which snapshots share. */
+function geometryBytes(m: Model): number {
+  let n = m.verts.length * 64;
+  for (const v of m.verts) if (v.w) n += v.w.length * 40;
+  for (const f of m.faces) n += 96 + f.v.length * 40;
+  return n;
+}
+
+/** Every image a snapshot holds: its textures, their layers and its reference pictures. */
+function imagesOf(m: Model, out: Set<string>) {
+  for (const t of m.textures) { out.add(t.url); t.layers?.forEach((l) => out.add(l.url)); }
+  m.refs?.forEach((r) => out.add(r.url));
+}
+
+/**
+ * Drop the oldest steps until the history's estimated memory fits `budget`, always keeping the newest. Images count
+ * once however many steps share them, since unchanged ones are the same string. Returns how many were dropped.
+ */
+export function trimHistory(stack: HistoryEntry[], current: Model, budget: number): number {
+  const cost = () => {
+    const imgs = new Set<string>();
+    imagesOf(current, imgs);
+    let n = 0;
+    for (const e of stack) { imagesOf(e.model, imgs); n += e.geo ??= geometryBytes(e.model); }
+    for (const s of imgs) n += s.length;
+    return n;
+  };
+  let dropped = 0;
+  while (stack.length > 1 && cost() > budget) { stack.shift(); dropped++; }
+  return dropped;
+}
 
 export class Editor {
   model: Model = emptyModel();
@@ -78,6 +113,10 @@ export class Editor {
   /** Tube tool: radius in metres, and how much it narrows toward the far end from 0 to 1. */
   strokeRadius = 0.12;
   strokeTaper = 0;
+  /** Curve tool: what the next drawn curve becomes. Changing it also reshapes the curve just drawn. */
+  curve: CurveParams = { ...DEFAULT_CURVE };
+  /** Curve tool: draw freehand, or place points with the pen. */
+  curveInput: 'draw' | 'pen' = 'draw';
   /** Silhouette tool: how deep a shape is, as a share of its width. */
   blobDepth = 0.8;
   /** Sculpt brush. Grab drags the surface, Inflate swells it, Smooth evens it out. */
@@ -157,6 +196,7 @@ export class Editor {
     this.undoStack.push(this.pending);
     if (this.undoStack.length > MAX_UNDO) this.undoStack.shift();
     this.redoStack = [];
+    trimHistory(this.undoStack, this.model, UNDO_BUDGET);
     this.pending = null;
     this.dirty = true;
     this.emit('history', 'file');
@@ -379,8 +419,11 @@ export class Editor {
       }
     }
     this.posedValid = true;
+    this.posVersion++;
     return this.posedBuf;
   }
+  /** Goes up each time the display positions are worked out afresh, so caches built from them know to rebuild. */
+  posVersion = 0;
 }
 
 export const ed = new Editor();

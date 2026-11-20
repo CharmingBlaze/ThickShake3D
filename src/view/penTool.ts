@@ -12,7 +12,7 @@ import type { Pane } from './pane';
 import * as pick from './picking';
 import type { SceneGraph } from './scene';
 
-const LINE = '#f2b24c', POINT = '#ffe2b0', HANDLE = '#7fc8f8', HOT = '#ffffff';
+const LINE = '#3fe05a', POINT = '#c5f5cf', HANDLE = '#7fc8f8', HOT = '#ffffff';
 /** Ring colours: bottom, middle, top. */
 export const RING_COLORS = ['#ff6b8b', '#3fe07a', '#5ac8ff'] as const;
 const RING_NAMES = ['Bottom', 'Middle', 'Top'] as const;
@@ -581,7 +581,7 @@ export class PenTool {
     line.forEach((q, k) => { const s = scr(q); if (k) g.lineTo(s.x, s.y); else g.moveTo(s.x, s.y); });
     if (this.closed) g.closePath();
     g.stroke();
-    if (this.closed && !this.live) { g.fillStyle = 'rgba(242,178,76,0.10)'; g.fill(); }
+    if (this.closed && !this.live) { g.fillStyle = 'rgba(63,224,90,0.10)'; g.fill(); }
     this.drawRings(g, p);
     if (!home || this.fixed) { g.lineCap = 'butt'; g.lineJoin = 'miter'; return; }
     // Where the next point goes, and the gap that closing would fill.

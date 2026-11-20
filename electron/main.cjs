@@ -33,8 +33,11 @@ function createWindow() {
     return { action: 'deny' };
   });
 
+  watchHealth(win);
+
   win.on('close', (e) => {
-    if (allowClose) return;
+    // A crashed page can't answer the unsaved-changes question, so don't wait on it.
+    if (allowClose || win.webContents.isCrashed()) return;
     e.preventDefault();
     win.webContents.send('request-close');
   });
@@ -69,6 +72,57 @@ function createWindow() {
     });
   }
 }
+
+// ---------- crash and hang recovery ----------
+// Without this a crashed or hung window just sits blank. Everything lands in crash.log so a crash can be diagnosed.
+const crashLog = () => path.join(app.getPath('userData'), 'crash.log');
+function logCrash(what) {
+  try { fs.appendFileSync(crashLog(), `${new Date().toISOString()} ${what}\n`); } catch { /* logging must never crash the app */ }
+}
+
+/** Reload a window whose page has died or hung; the autosave recovery prompt then brings the work back. */
+let restarting = false;
+function restart(w) {
+  if (w.isDestroyed()) return;
+  restarting = true; // this crash is on purpose; don't report it as a new one
+  w.webContents.forcefullyCrashRenderer(); // a hung renderer can't reload by itself; render-process-gone reloads it
+}
+
+function watchHealth(w) {
+  let hangPrompt = null;
+  w.webContents.on('render-process-gone', async (_e, d) => {
+    logCrash(`renderer gone: ${d.reason} (exit ${d.exitCode})${restarting ? ' [restart after hang]' : ''}`);
+    if (restarting) { restarting = false; if (!w.isDestroyed()) w.webContents.reload(); return; }
+    if (d.reason === 'clean-exit' || w.isDestroyed()) return;
+    hangPrompt?.abort();
+    const r = await dialog.showMessageBox(w, {
+      type: 'error', title: 'ThickShake', buttons: ['Reload', 'Quit'], defaultId: 0, cancelId: 1,
+      message: 'ThickShake stopped working.',
+      detail: `Reason: ${d.reason}. Reloading offers to recover your work from the last autosave.\nDetails were saved to ${crashLog()}`,
+    });
+    if (r.response === 0) w.webContents.reload();
+    else { allowClose = true; app.quit(); }
+  });
+  w.on('unresponsive', async () => {
+    logCrash('window unresponsive');
+    if (hangPrompt) return;
+    hangPrompt = new AbortController();
+    const r = await dialog.showMessageBox(w, {
+      type: 'warning', title: 'ThickShake', buttons: ['Keep waiting', 'Reload'], defaultId: 0, cancelId: 0,
+      message: 'ThickShake is not responding.',
+      detail: 'A long operation may still finish. Reloading offers to recover your work from the last autosave.',
+      signal: hangPrompt.signal,
+    }).catch(() => ({ response: 0 }));
+    hangPrompt = null;
+    if (r.response === 1) { logCrash('reloaded after hang'); restart(w); }
+  });
+  // It came back by itself, so the question no longer applies.
+  w.on('responsive', () => { logCrash('window responsive again'); hangPrompt?.abort(); });
+  w.webContents.on('console-message', (_e, level, message, line, source) => {
+    if (level === 3) logCrash(`error: ${message} (${source}:${line})`);
+  });
+}
+app.on('child-process-gone', (_e, d) => logCrash(`${d.type} process gone: ${d.reason} (exit ${d.exitCode})`));
 
 // Remove Electron's default menu: its accelerators (Ctrl+R reload, Ctrl+W close, ...)
 // would otherwise fire before the app's own shortcuts and could destroy unsaved work.

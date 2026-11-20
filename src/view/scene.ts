@@ -18,7 +18,7 @@ export type Shading = 'wire' | 'clay' | 'block' | 'pbr' | 'checker' | 'normals' 
 
 const WIRE_DARK = 0x14161a;
 const WIRE_LIGHT = 0x9aa3ad;
-export const SELECT_HEX = 0xf2b24c;
+export const SELECT_HEX = 0x3fe05a;
 
 /** A triangle's own corners, in order. */
 const TRI = [0, 1, 2];
@@ -94,7 +94,7 @@ export class SceneGraph {
   selEdgeMat = new THREE.LineBasicMaterial({ color: SELECT_HEX });
   pointMat = new THREE.PointsMaterial({ color: 0xdfe4ea, size: 5, sizeAttenuation: false });
   selPointMat = new THREE.PointsMaterial({ color: SELECT_HEX, size: 7.5, sizeAttenuation: false });
-  selFillMat = new THREE.MeshBasicMaterial({ color: SELECT_HEX, transparent: true, opacity: 0.32, side: THREE.DoubleSide, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
+  selFillMat = new THREE.MeshBasicMaterial({ color: SELECT_HEX, transparent: true, opacity: 0.18, side: THREE.DoubleSide, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
 
   // Shading override materials
   clayMat = new THREE.MeshStandardMaterial({ color: 0xb4b9c0, roughness: 0.72, metalness: 0, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1, side: THREE.DoubleSide });
@@ -164,7 +164,7 @@ export class SceneGraph {
 
   private makeGrid(plane: 'xz' | 'xy' | 'zy'): THREE.LineSegments {
     const half = 25, pos: number[] = [], col: number[] = [];
-    const minor = new THREE.Color(0x2c3036), major = new THREE.Color(0x3d424a);
+    const minor = new THREE.Color(0x505256), major = new THREE.Color(0x626468);
     const axisA = new THREE.Color(plane === 'zy' ? 0x4a90e2 : 0xe8555a); // first axis line
     const axisB = new THREE.Color(plane === 'xz' ? 0x4a90e2 : 0x7bc043); // second axis line
     const put = (a: number, b: number): [number, number, number] =>

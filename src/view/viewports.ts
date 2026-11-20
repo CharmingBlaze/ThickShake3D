@@ -1,6 +1,8 @@
 // The stage: layout of viewport panes, the render loop, the 2D overlay, and all pointer input.
 import * as THREE from 'three';
-import { ed, type OpParam, type SelMode, type ToolId } from '../core/editor';
+import { ed, type LastOp, type OpParam, type SelMode, type ToolId } from '../core/editor';
+import { CURVE_LABEL, curveToPrim, groupMeshData, PATH_OUTPUT_LABEL, simplifyStroke, type CurveParams, type P3 } from '../core/curves';
+import { CurvePen } from './curvePen';
 import { KnifeTool, LoopTool, type CutHost } from './cutTools';
 import { depthKey, limbKey, PenTool, widthKey, type PenBuild } from './penTool';
 import { ExtrudeTool } from './extrudeTool';
@@ -10,12 +12,11 @@ import { app } from '../ui/app';
 import { bounds, dist as dist3, edgeKey, faceNormal, norm, parseEdge } from '../core/geom';
 import * as ops from '../core/ops';
 import * as prims from '../core/primitives';
-import { ensureTrack, mirrorMaps, paintWeight, qAxisAngle, qConj, qMul, qNorm, qRotate, sampleTrack, setKey, smoothVertexWeight, vertexNeighbors } from '../core/skeleton';
-import { ikChain, solveIK } from '../core/anim';
+import { ensureTrack, mirrorMaps, qAxisAngle, qConj, qMul, qNorm, qRotate, sampleTrack, setKey } from '../core/skeleton';
 import { limbFrame, mirrorPiece, scaleFigure } from '../core/blockout';
 import { inflateParts, lathe, partPrim, PARTS, tube } from '../core/organic';
 import { evalPose, keyFrames, skinInto } from '../core/skeleton';
-import { uniqueName, type Bone, type Q, type RefImage, type V3 } from '../core/types';
+import { uniqueName, type RefImage, type V3 } from '../core/types';
 import { seamEdges } from '../core/uv';
 import { Pane, VIEW_LABELS, viewBasis, type ViewKind } from './pane';
 import { FaceTool } from './faceTool';
@@ -23,13 +24,16 @@ import { BendTool } from './bendTool';
 import { InsetModal } from './insetTool';
 import { clipToMirror } from '../core/mirror';
 import * as pick from './picking';
+import * as rig from './rigTools';
+import { sculptStep, startSculpt, type SculptDrag } from './sculptTool';
+import type { IkDrag, WeightDrag } from './rigTools';
 import { SceneGraph, type Shading } from './scene';
 import { h, ICONS, svgIcon } from '../ui/dom';
 import { status, toast } from '../ui/feedback';
 
 const AXIS = ['#e8555a', '#7bc043', '#4a90e2'];
 const AXIS_DIR: V3[] = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
-const SEL = '#f2b24c';
+const SEL = '#3fe05a';
 const GIZMO = 80; // pixels
 const VIEWPORT_KEY = 'thickshake.viewports';
 
@@ -39,11 +43,11 @@ type Drag =
   | { kind: 'transform'; pane: Pane; handle: Handle; x0: number; y0: number; mode: 'move' | 'rotate' | 'scale'; center: THREE.Vector3; orig: Map<number, V3>; mirror: Map<number, number>; boneOrig?: Map<number, V3>; boneMirror?: Map<number, number>; poseBase?: PoseBase; startAngle?: number }
   | { kind: 'prim'; pane: Pane; s: PrimSession; x0: number; y0: number; made: boolean }
   | { kind: 'primResize'; pane: Pane; s: PrimSession; x0: number; y0: number; min0: Vec3; max0: Vec3; move: boolean; made: boolean; axes: { i: number; sx: number; sy: number; side: -1 | 0 | 1 }[] }
-  | { kind: 'freehand'; pane: Pane; tool: 'stroke' | 'blob' | 'lathe'; origin: THREE.Vector3; points: THREE.Vector3[]; screen: [number, number][] }
-  | { kind: 'sculpt'; pane: Pane; x0: number; y0: number; grabbed: { v: number; w: number }[]; orig: Map<number, V3>; at: THREE.Vector3; neighbors: Map<number, Set<number>>; mirror: Map<number, number> | null; moved: boolean }
+  | { kind: 'freehand'; pane: Pane; tool: 'stroke' | 'blob' | 'lathe' | 'curve'; origin: THREE.Vector3; points: THREE.Vector3[]; screen: [number, number][] }
+  | SculptDrag
   | { kind: 'ref'; pane: Pane; id: number; x0: number; y0: number; ox: number; oy: number; size0: number; corner: { sx: number; sy: number; ax: number; ay: number; span: number } | null }
-  | { kind: 'ik'; pane: Pane; bone: number; frame: number; keep?: Q; base: Map<number, Q> }
-  | { kind: 'paint'; pane: Pane; neighbors: Map<number, Set<number>>; mirror: ReturnType<typeof mirrorMaps> | null };
+  | IkDrag
+  | WeightDrag;
 
 type Handle = { type: 'axis' | 'plane' | 'ring' | 'center' | 'view'; axis: number };
 type Vec3 = [number, number, number];
@@ -99,6 +103,13 @@ export class Viewports {
     invalidate: () => vp.invalidate(),
     startPiece: (build) => vp.startPenPiece(build),
   }))(this);
+  readonly curvePen = ((vp: Viewports) => new CurvePen({
+    get sg() { return vp.sg; },
+    invalidate: () => vp.invalidate(),
+    startCurve: (get, up) => vp.startCurve(get, up),
+    rebuildCurve: () => vp.rebuildCurve(),
+    get curveLive() { return vp.curveLive; },
+  }))(this);
   readonly extrudeTool = ((vp: Viewports) => new ExtrudeTool({
     get sg() { return vp.sg; },
     invalidate: () => vp.invalidate(),
@@ -113,6 +124,7 @@ export class Viewports {
   private insetModal = new InsetModal(() => this.invalidate());
   /** Bending the selection along a Bezier curve. */
   readonly bendTool = new BendTool({ invalidate: () => this.invalidate() });
+  private readonly toolHost = ((vp: Viewports): rig.RigHost => ({ get sg() { return vp.sg; }, snap: (w) => vp.snapV(w) }))(this);
   private faceTool = new FaceTool({
     scene: () => this.sg,
     invalidate: () => this.invalidate(),
@@ -164,6 +176,8 @@ export class Viewports {
       if (ed.tool !== 'loopcut') { this.loopTool.abort(); this.loopTool.clearHover(); } else this.loopTool.hint();
       // The shape being drawn or shaped belongs to Pen Shape or Draw Shape; any other tool lets it go.
       if (this.pen.active && ed.tool !== this.pen.owner) this.pen.reset();
+      if (this.curvePen.active && (ed.tool !== 'curve' || ed.curveInput !== 'pen')) this.curvePen.reset();
+      if (ed.tool === 'curve' && ed.curveInput === 'pen') this.curvePen.hint();
       this.cancelModal();
       if (ed.tool !== 'extrude') { this.extrudeTool.cancel(); this.extrudeTool.clearHover(); } else if (!this.extrudeTool.active) this.extrudeTool.hint();
       if (ed.tool !== 'tile') { this.tileTool.cancel(); this.tileTool.clearHover(); }
@@ -825,7 +839,7 @@ export class Viewports {
     const r = this.sg.renderer;
     const dpr = r.getPixelRatio();
     r.setScissorTest(false);
-    r.setClearColor(0x2b2f35); // The gap between panes, matching the interface's --line colour.
+    r.setClearColor(0x1c1d1f); // The gap between panes, matching the interface's --line colour.
     r.clear();
     r.setScissorTest(true);
     for (const p of this.visiblePanes()) {
@@ -834,7 +848,7 @@ export class Viewports {
       const py = this.cssH - p.y - p.h;
       r.setViewport(p.x, py, p.w, p.h);
       r.setScissor(p.x, py, p.w, p.h);
-      r.setClearColor(p.shading === 'wire' ? 0x1b1e22 : 0x24272c);
+      r.setClearColor(p.shading === 'wire' ? 0x45474b : 0x3d3f43);
       r.clear();
       this.sg.applyShading(p.shading);
       this.sg.showRefsFor(p.kind);
@@ -867,7 +881,7 @@ export class Viewports {
       if (center && this.gizmoMode()) this.drawGizmo(g, p, center);
       if (this.drag?.kind === 'box' && this.drag.pane === p) {
         const d = this.drag;
-        g.strokeStyle = SEL; g.fillStyle = 'rgba(242,178,76,.12)'; g.lineWidth = 1;
+        g.strokeStyle = SEL; g.fillStyle = 'rgba(63,224,90,.12)'; g.lineWidth = 1;
         g.setLineDash([4, 3]);
         const x = Math.min(d.x0, d.x1), y = Math.min(d.y0, d.y1), w = Math.abs(d.x1 - d.x0), hh = Math.abs(d.y1 - d.y0);
         g.fillRect(x, y, w, hh); g.strokeRect(x + 0.5, y + 0.5, w, hh);
@@ -881,6 +895,7 @@ export class Viewports {
       if (ed.tool === 'knife') this.knife.draw(g, p);
       if (ed.tool === 'loopcut') this.loopTool.draw(g, p);
       if (ed.tool === 'pen' || ed.tool === 'blob') this.pen.draw(g, p);
+      if (ed.tool === 'curve') this.curvePen.draw(g, p);
       if (ed.tool === 'extrude' || this.extrudeTool.active) this.extrudeTool.draw(g, p);
       if (ed.tool === 'texpaint') this.texPaint.draw(g, p);
       if (ed.tool === 'tile') this.tileTool.draw(g, p);
@@ -888,7 +903,7 @@ export class Viewports {
       this.drawModal(g, p);
       this.drawWeldTarget(g, p);
       if (p === this.active && this.layout === 'quad') {
-        g.strokeStyle = 'rgba(242,178,76,.55)'; g.lineWidth = 1;
+        g.strokeStyle = 'rgba(63,224,90,.55)'; g.lineWidth = 1;
         g.strokeRect(p.x + 0.5, p.y + 0.5, p.w - 1, p.h - 1);
       }
       g.restore();
@@ -989,6 +1004,7 @@ export class Viewports {
     if (ed.tool === 'face' && this.faceTool.key(e)) return true;
     if (ed.tool === 'bend' && this.bendTool.key(e)) return true;
     if (ed.tool === 'pen' || (ed.tool === 'blob' && this.pen.active)) return this.pen.key(e);
+    if (ed.tool === 'curve' && this.curvePen.key(e)) return true;
     if (ed.tool === 'knife') {
       if (this.knife.key(e)) return true;
     } else if (ed.tool === 'loopcut') {
@@ -1039,7 +1055,7 @@ export class Viewports {
       if (r.id === ed.refActive) continue;
       const o = this.refCorners(p, r);
       if (!o) continue;
-      g.strokeStyle = 'rgba(242,178,76,.45)'; g.lineWidth = 1; g.setLineDash([4, 4]);
+      g.strokeStyle = 'rgba(63,224,90,.45)'; g.lineWidth = 1; g.setLineDash([4, 4]);
       g.beginPath(); o.forEach((q, i) => (i ? g.lineTo(q.x, q.y) : g.moveTo(q.x, q.y))); g.closePath(); g.stroke();
       g.setLineDash([]);
     }
@@ -1292,39 +1308,6 @@ export class Viewports {
     }
   }
 
-  // ---------- IK ----------
-  private startIK(p: Pane, x: number, y: number) {
-    const c = ed.clip();
-    if (!ed.poseActive || !c) { toast('IK poses joints. Open the Animation workspace and create a clip.', 'info'); return; }
-    const bone = pick.pickBone(p, x, y, 14);
-    if (bone === null) return;
-    if (!ikChain(ed.model, bone, 1).length) { toast('This joint has no parent to bend. Move it with the Move tool instead.', 'info'); return; }
-    const frame = Math.round(ed.frame);
-    if (frame !== ed.frame) { ed.frame = frame; ed.emit('time'); }
-    const pose = ed.bonePose();
-    const base = new Map<number, Q>();
-    for (const id of [bone, ...ikChain(ed.model, bone, ed.ikChain)]) base.set(id, [...sampleTrack(c.tracks[id], frame).rot] as Q);
-    if (!ed.testPose) ed.begin('IK pose');
-    ed.activeBone = bone;
-    ed.selBones = new Set([bone]);
-    ed.mode = 'bone';
-    ed.emit('selection', 'skeleton');
-    this.drag = { kind: 'ik', pane: p, bone, frame, keep: ed.ikHold ? ([...pose.get(bone)!.rot] as Q) : undefined, base };
-  }
-
-  private dragIK(d: Extract<Drag, { kind: 'ik' }>, x: number, y: number) {
-    const c = ed.clip();
-    if (!c) return;
-    const at = ed.bonePose().get(d.bone)!.pos;
-    const here = new THREE.Vector3(...at);
-    const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(d.pane.viewDir(here), here);
-    const hit = d.pane.ray(x, y).intersectPlane(plane, new THREE.Vector3());
-    if (!hit) return;
-    const gap = solveIK(ed.model, c, d.frame, d.bone, [hit.x, hit.y, hit.z], ed.ikChain, d.keep);
-    ed.emit('anim', 'geometry');
-    status(gap > 0.01 ? `IK: out of reach by ${gap.toFixed(3)}. Raise Joints to reach further.` : `IK: ${ed.ikChain} joint${ed.ikChain === 1 ? '' : 's'} bending`);
-  }
-
   setUVOverlay(selected: Set<number>, hover: number | null) {
     const same = hover === this.uvHover && selected.size === this.uvSelected.size && [...selected].every((v) => this.uvSelected.has(v));
     if (same) return;
@@ -1421,7 +1404,7 @@ export class Viewports {
         const parentSel = ed.selBones.has(b.parent);
         g.beginPath();
         g.moveTo(t.x, t.y); g.lineTo(px + nx, py + ny); g.lineTo(s.x, s.y); g.lineTo(px - nx, py - ny); g.closePath();
-        g.fillStyle = parentSel ? 'rgba(242,178,76,.5)' : 'rgba(150,200,235,.3)';
+        g.fillStyle = parentSel ? 'rgba(63,224,90,.5)' : 'rgba(150,200,235,.3)';
         g.strokeStyle = parentSel ? SEL : '#9bcbe8';
         g.lineWidth = 1;
         g.fill(); g.stroke();
@@ -1640,6 +1623,7 @@ export class Viewports {
       if (ed.tool === 'loopcut' && !e.ctrlKey) { this.loopTool.wheel(e.deltaY); return; }
       if (ed.tool === 'paint' && e.ctrlKey) { ed.brush.radius = Math.max(4, Math.min(300, ed.brush.radius * (e.deltaY > 0 ? 0.9 : 1.1))); ed.emit('tool'); this.invalidate(); return; }
       if (ed.tool === 'sculpt' && e.ctrlKey) { ed.sculpt.radius = Math.max(4, Math.min(400, ed.sculpt.radius * (e.deltaY > 0 ? 0.9 : 1.1))); ed.emit('tool'); this.invalidate(); return; }
+      if (ed.tool === 'curve' && e.ctrlKey) { ed.curve.radius = Math.max(0.005, Math.min(10, ed.curve.radius * (e.deltaY > 0 ? 0.9 : 1.1))); this.rebuildCurve(); ed.emit('tool'); this.invalidate(); return; }
       if (ed.tool === 'stroke' && e.ctrlKey) { ed.strokeRadius = Math.max(0.002, ed.strokeRadius * (e.deltaY > 0 ? 0.9 : 1.1)); ed.emit('tool'); this.invalidate(); return; }
       p.zoom(e.deltaY > 0 ? 1.12 : 1 / 1.12, x, y);
       this.linkViews(p);
@@ -1699,8 +1683,9 @@ export class Viewports {
         const p = this.paneAt(x, y);
         if (ed.tool === 'knife' && p) { this.knife.move(p, x, y, e); return; }
         if ((ed.tool === 'pen' || (ed.tool === 'blob' && this.pen.active)) && p) { this.pen.move(p, x, y, e); return; }
+        if (ed.tool === 'curve' && ed.curveInput === 'pen' && p) { this.curvePen.move(p, x, y, e); return; }
         if ((ed.tool === 'extrude' || this.extrudeTool.active) && p) { this.extrudeTool.move(p, x, y, e); return; }
-        if (ed.tool === 'texpaint' && p) { this.texPaint.move(p, x, y); return; }
+        if (ed.tool === 'texpaint' && p) { this.texPaint.move(p, x, y, e); return; }
         if (this.insetModal.active && p) { this.insetModal.move(p, x, y, e); return; }
         if (ed.tool === 'face' && p) { this.faceTool.move(p, x, y, e); return; }
         if (ed.tool === 'tile' && p) { this.tileTool.move(p, x, y); return; }
@@ -1733,11 +1718,11 @@ export class Viewports {
           break;
         case 'prim': this.dragPrim(d, x, y, e); break;
         case 'primResize': this.dragPrimResize(d, x, y, e); break;
-        case 'ik': this.dragIK(d, x, y); break;
+        case 'ik': rig.dragIK(d, x, y); break;
         case 'ref': this.dragRef(d, x, y); break;
         case 'freehand': this.dragFreehand(d, x, y); break;
-        case 'sculpt': this.sculptStep(d, x, y, e); break;
-        case 'paint': this.paintAt(d.pane, x, y, e); break;
+        case 'sculpt': sculptStep(this.toolHost, d, x, y, e); break;
+        case 'paint': rig.paintWeights(this.toolHost, d, d.pane, x, y, e); this.mouse = { x, y, inside: true }; break;
       }
       if (d.kind === 'pan' || d.kind === 'panGround' || d.kind === 'panVertical' || d.kind === 'zoom') this.linkViews(d.pane);
       this.invalidate();
@@ -1746,7 +1731,7 @@ export class Viewports {
     ov.addEventListener('pointerleave', () => { this.mouse.inside = false; this.extrudeTool.clearHover(); this.preHover = null; this.invalidate(); });
 
     const finish = (e: PointerEvent) => {
-      if (e.button === 0) { this.knife.up(); this.loopTool.up(); this.pen.up(); this.extrudeTool.up(); this.texPaint.up(); this.tileTool.up(); this.bendTool.up(); }
+      if (e.button === 0) { this.knife.up(); this.loopTool.up(); this.pen.up(); this.curvePen.up(); this.extrudeTool.up(); this.texPaint.up(); this.tileTool.up(); this.bendTool.up(); }
       const d = this.drag;
       if (!d) return;
       this.drag = null;
@@ -1789,6 +1774,7 @@ export class Viewports {
         if (p) this.extrudeTool.dblclick(p, x, y);
         return;
       }
+      if (ed.tool === 'curve' && this.curvePen.active) { this.curvePen.dblclick(); return; }
       if (ed.tool === 'pen' || (ed.tool === 'blob' && this.pen.active)) {
         const { x, y } = this.local(e);
         const p = this.paneAt(x, y);
@@ -1817,12 +1803,7 @@ export class Viewports {
         setKey(t.pos, ed.frame, b.pos);
       }
       ed.emit('anim', 'geometry');
-    } else if (d.kind === 'ik') {
-      if (ed.testPose) {
-        d.base.forEach((q, id) => setKey(ensureTrack(ed.testClip, id).rot, d.frame, q));
-        ed.emit('anim', 'geometry');
-      } else ed.cancel();
-    } else if (d.kind === 'transform' || d.kind === 'paint' || d.kind === 'ref' || d.kind === 'sculpt') ed.cancel();
+    } else if (d.kind === 'ik') rig.cancelIK(d); else if (d.kind === 'transform' || d.kind === 'paint' || d.kind === 'ref' || d.kind === 'sculpt') ed.cancel();
     else if ((d.kind === 'prim' || d.kind === 'primResize') && d.made) {
       this.sessionWriting = true;
       ed.cancel();
@@ -1852,8 +1833,8 @@ export class Viewports {
       case 'vertex': this.placeVertex(p, x, y); return;
       case 'face': this.faceTool.down(p, x, y, e); return;
       case 'bend': if (!this.bendTool.down(p, x, y, e)) this.startSelect(p, x, y, e); return;
-      case 'joint': this.placeJoint(p, x, y); return;
-      case 'ik': this.startIK(p, x, y); return;
+      case 'joint': rig.placeJoint(this.toolHost, p, x, y); return;
+      case 'ik': this.drag = rig.startIK(p, x, y); return;
       case 'blob':
         // While a drawn shape is being shaped, its ring handles come first; a press anywhere else finishes it
         // and starts the next one.
@@ -1864,7 +1845,8 @@ export class Viewports {
         this.startFreehand(p, x, y, t);
         return;
       case 'stroke': case 'lathe': this.startFreehand(p, x, y, t); return;
-      case 'sculpt': this.startSculpt(p, x, y, e); return;
+      case 'curve': if (ed.curveInput === 'pen') this.curvePen.down(p, x, y, e); else this.startFreehand(p, x, y, t); return;
+      case 'sculpt': this.drag = startSculpt(this.toolHost, p, x, y, e); return;
       case 'loopcut': this.loopTool.down(p, x, y); return;
       case 'knife': this.knife.down(p, x, y, e); return;
       case 'pen':
@@ -1872,10 +1854,11 @@ export class Viewports {
         this.pen.down(p, x, y, e);
         return;
       case 'paint': {
-        if (ed.activeBone === null) { toast('Pick a bone in the Skeleton panel first.', 'warn'); return; }
-        ed.begin('Paint weights');
-        this.drag = { kind: 'paint', pane: p, neighbors: vertexNeighbors(ed.model), mirror: ed.mirrorX ? mirrorMaps(ed.model) : null };
-        this.paintAt(p, x, y, e);
+        const d = rig.startWeights(p);
+        if (!d) return;
+        this.drag = d;
+        rig.paintWeights(this.toolHost, d, p, x, y, e);
+        this.mouse = { x, y, inside: true };
         return;
       }
       default:
@@ -2233,7 +2216,7 @@ export class Viewports {
 
   // ---------- freehand drawing ----------
   /** Begin a hand-drawn line, on the surface under the cursor if there is one, in the plane facing the view. */
-  private startFreehand(p: Pane, x: number, y: number, tool: 'stroke' | 'blob' | 'lathe') {
+  private startFreehand(p: Pane, x: number, y: number, tool: 'stroke' | 'blob' | 'lathe' | 'curve') {
     const hit = ed.drawOnSurface ? pick.pickFace(p, this.sg, x, y, false) : null;
     const origin = hit ? hit.point.clone() : p.viewPlanePoint(x, y);
     this.drag = { kind: 'freehand', pane: p, tool, origin, points: [origin.clone()], screen: [[x, y]] };
@@ -2251,6 +2234,7 @@ export class Viewports {
 
   /** Turn the finished line into a piece, plus its mirror image when symmetry is on. */
   private finishFreehand(d: Extract<Drag, { kind: 'freehand' }>) {
+    if (d.tool === 'curve') { this.finishCurve(d); return; }
     const sides = ed.primSegments, smooth = !ed.lowPoly;
     let prim: prims.Prim | null = null;
     let name = 'Tube';
@@ -2283,6 +2267,38 @@ export class Viewports {
       if (ed.mirrorX && ed.workspace === 'block') mirrorPiece(m, gid);
     });
     status('');
+  }
+
+  /** The curve just drawn, while it's still the last edit: changing the Curves panel rebuilds it. */
+  private curveOp: LastOp | null = null;
+  get curveLive() { return this.curveOp !== null && ed.lastOp === this.curveOp; }
+
+  /** Rebuild the curve just drawn from the current Curves settings. */
+  rebuildCurve() { if (this.curveLive) ed.rerunLastOp(); }
+
+  /** A freehand Curves stroke: thinned to control points, then built with the Curves settings. */
+  private finishCurve(d: Extract<Drag, { kind: 'freehand' }>) {
+    const pts = simplifyStroke(d.points.map((q): P3 => [q.x, q.y, q.z]), d.pane.unitsPerPixel(d.origin) * 2);
+    const { up } = d.pane.screenAxes();
+    if (this.startCurve(() => ({ pts, params: ed.curve }), [up.x, up.y, up.z])) status('');
+  }
+
+  /**
+   * Build a curve as an adjustable operation. `get` is read on every run, so the Curves panel and the pen can
+   * reshape it while it's still the last edit. False, with a message, if it can't be built.
+   */
+  startCurve(get: () => { pts: P3[]; params: CurveParams }, up: P3): boolean {
+    const c = ed.curve;
+    const name = c.solid === 'lathe' ? 'Lathe' : c.kind === 'path' ? PATH_OUTPUT_LABEL[c.pathOutput] : CURVE_LABEL[c.kind];
+    let last: prims.Prim;
+    try { const g = get(); last = curveToPrim(g.pts, g.params, up, (id) => groupMeshData(ed.model, id)); } catch (e) { toast((e as Error).message, 'info'); return false; }
+    ed.runOp(`Draw ${name.toLowerCase()}`, [], (m) => {
+      // A setting or path the curve can't take keeps the last shape that worked.
+      try { const g = get(); last = curveToPrim(g.pts, g.params, up, (id) => groupMeshData(m, id)); } catch { /* keep the last shape */ }
+      this.selectNewPrim(ops.addPrim(m, last, name, { material: ed.activeMaterial }));
+    });
+    this.curveOp = ed.lastOp;
+    return true;
   }
 
   /**
@@ -2333,7 +2349,7 @@ export class Viewports {
     g.globalAlpha = d.tool === 'stroke' ? 0.45 : 1;
     g.beginPath();
     d.screen.forEach(([x, y], i) => { if (i) g.lineTo(x, y); else g.moveTo(x, y); });
-    if (d.tool === 'blob') g.closePath();
+    if (d.tool === 'blob' || (d.tool === 'curve' && ed.curve.cyclic && ed.curve.solid === 'extrude')) g.closePath();
     g.stroke();
     if (d.tool === 'lathe') {
       // Show the axis it will spin around.
@@ -2346,132 +2362,6 @@ export class Viewports {
   }
 
   // ---------- sculpting ----------
-  /** The vertices under the brush, weighted by a soft falloff from its centre. */
-  private brushVerts(p: Pane, x: number, y: number): { v: number; w: number }[] {
-    const P = ed.displayPositions();
-    const r = ed.sculpt.radius;
-    const seeThrough = ed.xray || p.shading === 'wire';
-    const at = new THREE.Vector3();
-    const out: { v: number; w: number }[] = [];
-    const list = this.sg.visibleVerts;
-    for (let i = 0; i < list.length; i++) {
-      const v = list[i];
-      const s = p.project(P[v * 3], P[v * 3 + 1], P[v * 3 + 2]);
-      const d = Math.hypot(s.x - x, s.y - y);
-      if (d > r) continue;
-      if (!seeThrough && pick.occluded(p, this.sg, at.fromArray(P, v * 3))) continue;
-      const k = 1 - d / r;
-      out.push({ v, w: k * k * (3 - 2 * k) });
-    }
-    return out;
-  }
-
-  private startSculpt(p: Pane, x: number, y: number, e: PointerEvent) {
-    if (ed.poseActive) { toast('Sculpting edits the rest shape. Leave the pose first.', 'info'); return; }
-    const under = this.brushVerts(p, x, y);
-    if (!under.length) return;
-    ed.begin('Sculpt');
-    const m = ed.model;
-    const hitAt = pick.pickFace(p, this.sg, x, y, true)?.point ?? new THREE.Vector3(...m.verts[under[0].v].p);
-    this.drag = {
-      kind: 'sculpt', pane: p, x0: x, y0: y, grabbed: under,
-      orig: new Map(under.map((u) => [u.v, [...m.verts[u.v].p] as V3])),
-      at: hitAt.clone(), neighbors: vertexNeighbors(m), mirror: ed.mirrorX ? mirrorMaps(m).vert : null, moved: false,
-    };
-    if (ed.sculpt.mode !== 'grab') this.sculptStep(this.drag as Extract<Drag, { kind: 'sculpt' }>, x, y, e);
-  }
-
-  private setSculpted(d: Extract<Drag, { kind: 'sculpt' }>, v: number, p: V3) {
-    const m = ed.model;
-    m.verts[v].p = p;
-    const twin = d.mirror?.get(v);
-    if (twin !== undefined && twin !== v) m.verts[twin].p = [-p[0], p[1], p[2]];
-  }
-
-  private sculptStep(d: Extract<Drag, { kind: 'sculpt' }>, x: number, y: number, e: PointerEvent) {
-    const m = ed.model;
-    const u = d.pane.unitsPerPixel(d.at);
-    if (ed.sculpt.mode === 'grab') {
-      const { right, up } = d.pane.screenAxes();
-      const dx = (x - d.x0) * u, dy = -(y - d.y0) * u;
-      for (const { v, w } of d.grabbed) {
-        const o = d.orig.get(v)!;
-        this.setSculpted(d, v, [o[0] + (right.x * dx + up.x * dy) * w, o[1] + (right.y * dx + up.y * dy) * w, o[2] + (right.z * dx + up.z * dy) * w]);
-      }
-    } else {
-      const under = this.brushVerts(d.pane, x, y);
-      if (ed.sculpt.mode === 'flatten' && !e.ctrlKey && under.length) {
-        // Press everything under the brush toward their average plane.
-        let cx = 0, cy = 0, cz = 0, nx = 0, ny = 0, nz = 0;
-        const want = new Set(under.map((b) => b.v));
-        for (const { v } of under) { const p = m.verts[v].p; cx += p[0]; cy += p[1]; cz += p[2]; }
-        cx /= under.length; cy /= under.length; cz /= under.length;
-        for (const f of m.faces) if (f.v.some((v) => want.has(v))) { const n = faceNormal(m, f); nx += n[0]; ny += n[1]; nz += n[2]; }
-        const n = norm([nx, ny, nz]);
-        for (const { v, w } of under) {
-          const p = m.verts[v].p;
-          const off = (p[0] - cx) * n[0] + (p[1] - cy) * n[1] + (p[2] - cz) * n[2];
-          const k = off * Math.min(1, w * ed.sculpt.strength);
-          this.setSculpted(d, v, [p[0] - n[0] * k, p[1] - n[1] * k, p[2] - n[2] * k]);
-        }
-        d.moved = true;
-        ed.emit('geometry');
-        return;
-      }
-      if (ed.sculpt.mode === 'pinch' && !e.ctrlKey) {
-        // Draw the surface in toward the brush's centre, across the view: creases, lips, knuckles. Shift pushes apart.
-        const view = d.pane.viewDir(d.at);
-        const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(view, d.at);
-        const hit = d.pane.ray(x, y).intersectPlane(plane, new THREE.Vector3());
-        if (hit) {
-          const dirSign = e.shiftKey ? -1 : 1;
-          for (const { v, w } of under) {
-            const p = m.verts[v].p;
-            const to = new THREE.Vector3(hit.x - p[0], hit.y - p[1], hit.z - p[2]);
-            to.addScaledVector(view, -to.dot(view));
-            const k = Math.min(0.5, w * ed.sculpt.strength * 0.25) * dirSign;
-            this.setSculpted(d, v, [p[0] + to.x * k, p[1] + to.y * k, p[2] + to.z * k]);
-          }
-          d.moved = true;
-          ed.emit('geometry');
-        }
-        return;
-      }
-      const smoothing = ed.sculpt.mode === 'smooth' || e.ctrlKey;
-      const sign = e.shiftKey ? -1 : 1;
-      // Vertex normals from the faces around each point.
-      const normals = new Map<number, V3>();
-      if (!smoothing) {
-        const want = new Set(under.map((b) => b.v));
-        for (const f of m.faces) {
-          if (!f.v.some((v) => want.has(v))) continue;
-          const n = faceNormal(m, f);
-          for (const v of f.v) if (want.has(v)) { const o = normals.get(v) ?? [0, 0, 0]; normals.set(v, [o[0] + n[0], o[1] + n[1], o[2] + n[2]]); }
-        }
-      }
-      const step = ed.sculpt.radius * u * 0.06 * ed.sculpt.strength;
-      const next: [number, V3][] = [];
-      for (const { v, w } of under) {
-        const p = m.verts[v].p;
-        if (smoothing) {
-          const nb = d.neighbors.get(v);
-          if (!nb?.size) continue;
-          let a = 0, b = 0, c = 0;
-          for (const o of nb) { const q = m.verts[o].p; a += q[0]; b += q[1]; c += q[2]; }
-          const k = Math.min(1, w * ed.sculpt.strength * 1.5);
-          next.push([v, [p[0] + (a / nb.size - p[0]) * k, p[1] + (b / nb.size - p[1]) * k, p[2] + (c / nb.size - p[2]) * k]]);
-        } else {
-          const n = norm(normals.get(v) ?? [0, 0, 0]);
-          const k = step * w * sign;
-          next.push([v, [p[0] + n[0] * k, p[1] + n[1] * k, p[2] + n[2] * k]]);
-        }
-      }
-      next.forEach(([v, p]) => this.setSculpted(d, v, p));
-    }
-    d.moved = true;
-    ed.emit('geometry');
-  }
-
   /** The outline: from where the drag began to the cursor, or symmetrical while Ctrl is held. */
   private dragPrim(d: Extract<Drag, { kind: 'prim' }>, x: number, y: number, e: PointerEvent) {
     if (!d.made && Math.hypot(x - d.x0, y - d.y0) < 4) return;
@@ -2721,66 +2611,6 @@ export class Viewports {
   createPrim(tool: string, c: V3) {
     const { prim, name } = this.primShape(tool);
     this.selectNewPrim(ops.addPrim(ed.model, prim, name, { material: ed.activeMaterial, center: c }));
-  }
-
-  private placeJoint(p: Pane, x: number, y: number) {
-    const parent = ed.activeBone;
-    const parentBone = ed.model.bones.find((b) => b.id === parent);
-    const through = parentBone ? new THREE.Vector3(...parentBone.head) : new THREE.Vector3();
-    const w = p.planePoint(x, y, through);
-    if (ed.snap) this.snapV(w);
-    if (!p.isOrtho && !parentBone) {
-      const hit = pick.pickFace(p, this.sg, x, y, true);
-      if (hit) w.copy(hit.point);
-    }
-    let id = 0;
-    ed.transact('Add joint', (m) => {
-      id = m.nextId++;
-      const bone: Bone = { id, name: uniqueName(m.bones.map((b) => b.name), m.bones.length ? 'Bone' : 'Root'), parent: parent ?? null, head: [w.x, w.y, w.z] };
-      m.bones.push(bone);
-    });
-    ed.activeBone = id;
-    ed.selBones = new Set([id]);
-    ed.mode = 'bone';
-    ed.emit('selection', 'skeleton', 'tool');
-    status('Click to chain another joint. Esc to stop and select a different parent.');
-  }
-
-  // ---------- weight paint ----------
-  private paintAt(p: Pane, x: number, y: number, e: PointerEvent) {
-    const bone = ed.activeBone;
-    if (bone === null) return;
-    const d0 = this.drag;
-    if (d0?.kind !== 'paint') return;
-    const P = ed.displayPositions();
-    const r = ed.brush.radius;
-    const strength = ed.brush.strength;
-    const sub = ed.brush.mode === 'sub' || e.shiftKey;
-    const smooth = ed.brush.mode === 'smooth' || e.ctrlKey;
-    const seeThrough = ed.brush.through || ed.xray || p.shading === 'wire';
-    const m = ed.model;
-    const list = this.sg.visibleVerts;
-    const at = new THREE.Vector3();
-    for (let i = 0; i < list.length; i++) {
-      const v = list[i];
-      const s = p.project(P[v * 3], P[v * 3 + 1], P[v * 3 + 2]);
-      const d = Math.hypot(s.x - x, s.y - y);
-      if (d > r) continue;
-      // The brush paints the surface it's over, not whatever lies behind it.
-      if (!seeThrough && pick.occluded(p, this.sg, at.fromArray(P, v * 3))) continue;
-      const fall = 1 - d / r;
-      const amount = strength * fall * fall;
-      if (smooth) smoothVertexWeight(m, v, d0.neighbors, Math.min(1, amount * 2));
-      else paintWeight(m, v, bone, sub ? 0 : 1, amount);
-      const twin = d0.mirror?.vert.get(v);
-      if (twin !== undefined && twin !== v) {
-        if (smooth) smoothVertexWeight(m, twin, d0.neighbors, Math.min(1, amount * 2));
-        else paintWeight(m, twin, d0.mirror!.bone.get(bone) ?? bone, sub ? 0 : 1, amount);
-      }
-    }
-    this.sg.updateWeights();
-    ed.emit('geometry');
-    this.mouse = { x, y, inside: true };
   }
 
   // ---------- framing ----------

@@ -991,8 +991,8 @@ export function uvOverlaps(m: Model, faces: Iterable<number>): Set<number> {
   const sx = N / Math.max(hix - lox, 1e-9), sy = N / Math.max(hiy - loy, 1e-9);
   const cell = (v: number) => Math.max(0, Math.min(N - 1, Math.floor(v)));
   const grid = new Map<number, number[]>();
-  const tested = new Set<number>();
-  const total = tris.length;
+  // Each pair is only tested from its later triangle, so a per-triangle stamp de-duplicates without a pair set.
+  const stamp = new Int32Array(tris.length).fill(-1);
   tris.forEach((r, i) => {
     for (let gy = cell((r.y0 - loy) * sy); gy <= cell((r.y1 - loy) * sy); gy++) {
       for (let gx = cell((r.x0 - lox) * sx); gx <= cell((r.x1 - lox) * sx); gx++) {
@@ -1002,9 +1002,8 @@ export function uvOverlaps(m: Model, faces: Iterable<number>): Set<number> {
         for (const j of list) {
           const o = tris[j];
           if (o.f === r.f) continue;
-          const pair = j * total + i;
-          if (tested.has(pair)) continue;
-          tested.add(pair);
+          if (stamp[j] === i) continue;
+          stamp[j] = i;
           if (r.x0 >= o.x1 || o.x0 >= r.x1 || r.y0 >= o.y1 || o.y0 >= r.y1) continue;
           if (trisOverlap(r.t, o.t)) { out.add(r.f); out.add(o.f); }
         }

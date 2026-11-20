@@ -29,7 +29,21 @@ export const paint = {
   rectFilled: false,
   /** Paint both sides of the texture's vertical centre line at once. */
   mirror: false,
+  /** A pen's pressure sets the brush's size, and a soft brush's opacity too. */
+  pressure: true,
 };
+
+/** How hard the pen presses, 0..1; 1 for a mouse or with pressure off. */
+let penPressure = 1;
+export function setPressure(e: PointerEvent) {
+  penPressure = paint.pressure && e.pointerType === 'pen' ? Math.max(0.05, e.pressure) : 1;
+}
+
+/** The brush as the pen presses it now. */
+export function pressed(b: Brush): Brush {
+  if (penPressure === 1) return b;
+  return { ...b, size: Math.max(1, b.size * penPressure), opacity: b.shape === 'soft' ? b.opacity * penPressure : b.opacity };
+}
 
 const TOOL_INFO: Record<PaintToolId, { label: string; key: string; icon: string; hint: string }> = {
   pencil: { label: 'Pencil', key: 'P', icon: glyph('draw'), hint: 'Hard pixels, for pixel art.' },
@@ -48,7 +62,7 @@ export function setPaintTool(t: PaintToolId) {
   app.paintRefresh();
 }
 
-function brushFor(tool: PaintToolId): Brush {
+export function brushFor(tool: PaintToolId): Brush {
   const pixelShape = paint.round ? 'round' : 'square';
   if (tool === 'brush') return { size: paint.size, shape: 'soft', opacity: paint.opacity, hardness: paint.hardness, erase: false };
   return { size: paint.size, shape: pixelShape, opacity: 1, hardness: 1, erase: tool === 'eraser' };
@@ -72,9 +86,6 @@ interface Stroke {
   /** Lines and rectangles redraw from here as they're dragged; with a selection, pixels outside go back to it. */
   before: Uint8ClampedArray | null;
   changed: boolean;
-  /** Painting on the model: where the brush last landed on each face across a UV seam, and on which move. */
-  twins: Map<number, { x: number; y: number; gen: number }>;
-  gen: number;
 }
 let stroke: Stroke | null = null;
 
@@ -89,9 +100,10 @@ function clip(s: Stroke, area: Rect) {
 }
 
 function lay(s: Stroke, ax: number, ay: number, bx: number, by: number) {
-  strokeLine(s.doc.img, ax, ay, bx, by, s.color, s.brush, s.covered);
-  if (paint.mirror) strokeLine(s.doc.img, mirrorX(s.doc, ax), ay, mirrorX(s.doc, bx), by, s.color, s.brush, s.covered);
-  const r = s.brush.size + 2;
+  const b = pressed(s.brush);
+  strokeLine(s.doc.img, ax, ay, bx, by, s.color, b, s.covered);
+  if (paint.mirror) strokeLine(s.doc.img, mirrorX(s.doc, ax), ay, mirrorX(s.doc, bx), by, s.color, b, s.covered);
+  const r = b.size + 2;
   const box = (x0: number, x1: number): Rect => ({ x: Math.floor(Math.min(x0, x1) - r), y: Math.floor(Math.min(ay, by) - r), w: Math.ceil(Math.abs(x1 - x0) + r * 2) + 1, h: Math.ceil(Math.abs(by - ay) + r * 2) + 1 });
   clip(s, box(ax, bx));
   if (paint.mirror) clip(s, box(mirrorX(s.doc, ax), mirrorX(s.doc, bx)));
@@ -139,7 +151,7 @@ export function strokeBegin(d: TexDoc, x: number, y: number, second: boolean, pi
     if (n) { pushLive(d); commitDoc(d, 'Fill'); }
     return false;
   }
-  stroke = { doc: d, tool, color, brush: brushFor(tool), covered: new Map(), last: [x, y], start: [x, y], before: selection.rect ? d.img.data.slice() : null, changed: false, twins: new Map(), gen: 0 };
+  stroke = { doc: d, tool, color, brush: brushFor(tool), covered: new Map(), last: [x, y], start: [x, y], before: selection.rect ? d.img.data.slice() : null, changed: false };
   if (tool === 'line' || tool === 'rect') { stroke.before = d.img.data.slice(); shape(stroke, x, y); }
   else lay(stroke, x, y, x, y);
   stroke.changed = true;
@@ -156,32 +168,11 @@ export function strokeMove(x: number, y: number, jump = false) {
   else lay(s, s.last[0], s.last[1], x, y);
   s.last = [x, y];
   s.changed = true;
-  s.gen++;
   pushLive(s.doc);
 }
 
-/** Whether the stroke paints with a brush tip, so painting on the model carries it across UV seams. */
-export const strokeHasTip = () => !!stroke && (stroke.tool === 'pencil' || stroke.tool === 'brush' || stroke.tool === 'eraser');
-
-/**
- * Paint the same stroke where it also reaches across a UV seam: at pixel (x, y), `size` pixels wide, on face `key`.
- * Joins up with that face's last spot if it was painted on this move or the one before. Shows nothing until the next
- * strokeMove or strokeFlush.
- */
-export function strokeAlso(key: number, x: number, y: number, size: number) {
-  const s = stroke;
-  if (!s || !strokeHasTip() || size < 0.5) return;
-  const prev = s.twins.get(key);
-  const join = prev && prev.gen >= s.gen - 1 && Math.hypot(x - prev.x, y - prev.y) <= Math.max(12, size * 4);
-  const tip = s.brush;
-  s.brush = { ...tip, size };
-  if (join) lay(s, prev.x, prev.y, x, y); else lay(s, x, y, x, y);
-  s.brush = tip;
-  s.twins.set(key, { x, y, gen: s.gen });
-  s.changed = true;
-}
-
-export function strokeFlush() { if (stroke) pushLive(stroke.doc); }
+/** A paint tool's name, for undo. */
+export const toolLabel = (t: PaintToolId) => TOOL_INFO[t].label;
 
 export function strokeEnd() {
   const s = stroke;
@@ -357,7 +348,7 @@ export class PaintEditor {
     g.strokeStyle = '#4a4f58'; g.strokeRect(ox - 0.5, oy - 0.5, d.w * z + 1, d.h * z + 1);
     // The model's UV layout over the texture, so you can see where paint lands.
     if (this.showWire) {
-      g.strokeStyle = 'rgba(242,178,76,0.55)'; g.lineWidth = 1;
+      g.strokeStyle = 'rgba(47,127,214,0.55)'; g.lineWidth = 1;
       g.beginPath();
       const m = ed.model;
       for (const fi of workingFaces()) {
@@ -447,6 +438,7 @@ export class PaintEditor {
       opts.push(numField({ label: 'Hardness', value: paint.hardness, min: 0, max: 1, step: 0.01, digits: 2, onChange: (v) => { paint.hardness = v; } }));
     }
     if (tool === 'pencil' || tool === 'eraser') opts.push(checkbox('Round', paint.round, (v) => { paint.round = v; this.draw(); }, 'Round tip once wider than 2 pixels; square otherwise'));
+    if (tool === 'pencil' || tool === 'brush' || tool === 'eraser') opts.push(checkbox('Pressure', paint.pressure, (v) => { paint.pressure = v; }, 'A pen\'s pressure sets the brush size, and the soft brush\'s opacity'));
     if (tool === 'fill') {
       opts.push(numField({ label: 'Tolerance', value: paint.tolerance, min: 0, max: 255, step: 1, digits: 0, title: 'How different a colour may be and still be filled', onChange: (v) => { paint.tolerance = Math.round(v); } }));
       opts.push(checkbox('Every match', paint.fillAll, (v) => { paint.fillAll = v; }, 'Fill every pixel of that colour, not just the connected area'));
@@ -597,6 +589,7 @@ export class PaintEditor {
         this.renderBar(); this.draw();
         return;
       }
+      setPressure(e);
       if (strokeBegin(d, px, py, e.button === 2, e.altKey)) this.drag = { kind: 'paint' };
       this.draw();
     });
@@ -607,7 +600,7 @@ export class PaintEditor {
       if (dr?.kind === 'pan') { this.panX += x - dr.x; this.panY += y - dr.y; dr.x = x; dr.y = y; }
       else if (dr?.kind === 'paint') {
         const d = this.doc();
-        if (d) { const [px, py] = this.toPixel(d, x, y); strokeMove(px, py); }
+        if (d) { const [px, py] = this.toPixel(d, x, y); setPressure(e); strokeMove(px, py); }
       } else if (dr?.kind === 'select') {
         const d = this.doc();
         if (d) {

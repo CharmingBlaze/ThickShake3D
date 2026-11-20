@@ -16,7 +16,7 @@ import type { Pane } from './pane';
 import * as pick from './picking';
 import type { SceneGraph } from './scene';
 
-const HOVER = '#f2b24c';
+const HOVER = '#3fe05a';
 
 export interface ExtrudeHost {
   sg: SceneGraph;
@@ -262,7 +262,7 @@ export class ExtrudeTool {
       if (i) g.lineTo(sc.x, sc.y); else g.moveTo(sc.x, sc.y);
     });
     g.closePath();
-    g.fillStyle = 'rgba(242,178,76,0.22)'; g.fill();
+    g.fillStyle = 'rgba(63,224,90,0.22)'; g.fill();
     g.strokeStyle = HOVER; g.lineWidth = 2; g.stroke();
   }
 

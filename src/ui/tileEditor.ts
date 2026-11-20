@@ -289,7 +289,7 @@ export class TileEditor {
       g.strokeStyle = '#7fc8f8'; g.setLineDash([5, 3]); g.lineWidth = 2; g.strokeRect(ax + 1, ay + 1, aww - 2, ahh - 2); g.setLineDash([]);
     }
     const [bx, by, bw, bh] = rectOf(tiles.block);
-    g.strokeStyle = '#f2b24c'; g.lineWidth = 2; g.strokeRect(bx + 1, by + 1, bw - 2, bh - 2);
+    g.strokeStyle = '#2f7fd6'; g.lineWidth = 2; g.strokeRect(bx + 1, by + 1, bw - 2, bh - 2);
     // The chosen tile as it will go down: turned and flipped.
     if (im) {
       const [px, py, pw, ph] = tilePixels(grid, tiles.block.col, tiles.block.row);

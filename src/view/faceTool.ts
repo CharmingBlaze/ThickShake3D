@@ -30,7 +30,7 @@ type Hover =
   | { kind: 'edge'; a: number; b: number }
   | { kind: 'point'; p: V3; onSurface: boolean };
 
-const SEL = '#f2b24c', CLOSE = '#34d399', NEW = '#7fc8f8';
+const SEL = '#3fe05a', CLOSE = '#34d399', NEW = '#7fc8f8';
 
 /** The Face tool's settings, shown in the side panel while it's in use. */
 export interface FaceOptions {
@@ -335,7 +335,7 @@ export class FaceTool {
     if (pts.length) {
       const poly = tip ? [...pts, tip] : pts;
       if (poly.length >= 3) {
-        g.fillStyle = 'rgba(242,178,76,0.14)';
+        g.fillStyle = 'rgba(63,224,90,0.14)';
         g.beginPath(); poly.forEach((s, i) => (i ? g.lineTo(s.x, s.y) : g.moveTo(s.x, s.y))); g.closePath(); g.fill();
       }
       g.strokeStyle = SEL; g.lineWidth = 1.5;

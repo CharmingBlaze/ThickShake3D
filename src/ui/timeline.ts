@@ -9,7 +9,7 @@ import { status } from './feedback';
 import { menuButton } from './menu';
 
 const ROW = 20, RULER = 22, NAME_W = 150;
-const SEL = '#f2b24c';
+const SEL = '#2f7fd6';
 const EASE_COLOR: Record<string, string> = { linear: '#d9dee4', smooth: '#7fc8f8', in: '#7fc8f8', out: '#7fc8f8', overshoot: '#c9a2f2', anticipate: '#c9a2f2', step: '#e8855a', custom: '#8fe0a6' };
 const CHANNELS = [
   { id: 'rx', label: 'Rotate X', list: 'rot', i: 0, color: '#e8555a' }, { id: 'ry', label: 'Rotate Y', list: 'rot', i: 1, color: '#7bc043' }, { id: 'rz', label: 'Rotate Z', list: 'rot', i: 2, color: '#4a90e2' },
@@ -348,7 +348,7 @@ export class Timeline {
     const drawRow = (i: number, name: string, depth: number, bone: number | null, active: boolean) => {
       const y = y0 + i * ROW;
       if (y > H || y + ROW < RULER) return;
-      if (active) { g.fillStyle = 'rgba(242,178,76,.08)'; g.fillRect(0, y, W, ROW); }
+      if (active) { g.fillStyle = 'rgba(47,127,214,.08)'; g.fillRect(0, y, W, ROW); }
       g.strokeStyle = '#22252a'; g.beginPath(); g.moveTo(0, y + ROW - 0.5); g.lineTo(W, y + ROW - 0.5); g.stroke();
       g.fillStyle = active ? SEL : bone === null ? '#c9cdd3' : '#a4abb4';
       g.fillText(name, 10 + depth * 9, y + ROW / 2, NAME_W - 14 - depth * 9);
@@ -387,14 +387,14 @@ export class Timeline {
     const span = this.selectionSpan();
     if (span && (!this.drag || this.drag.type !== 'box')) {
       const a = this.xOf(this.previewFrame(span.lo)), b = this.xOf(this.previewFrame(span.hi));
-      g.fillStyle = 'rgba(242,178,76,.07)';
+      g.fillStyle = 'rgba(47,127,214,.07)';
       g.fillRect(a, RULER, b - a, H - RULER);
       g.fillStyle = SEL;
       for (const x of [a, b]) g.fillRect(x - 1.5, RULER, 3, H - RULER);
     }
     if (this.drag?.type === 'box') {
       const d = this.drag;
-      g.strokeStyle = SEL; g.fillStyle = 'rgba(242,178,76,.12)'; g.setLineDash([4, 3]);
+      g.strokeStyle = SEL; g.fillStyle = 'rgba(47,127,214,.12)'; g.setLineDash([4, 3]);
       g.fillRect(Math.min(d.x0, d.x1), Math.min(d.y0, d.y1), Math.abs(d.x1 - d.x0), Math.abs(d.y1 - d.y0));
       g.strokeRect(Math.min(d.x0, d.x1) + 0.5, Math.min(d.y0, d.y1) + 0.5, Math.abs(d.x1 - d.x0), Math.abs(d.y1 - d.y0));
       g.setLineDash([]);

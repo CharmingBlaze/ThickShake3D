@@ -12,6 +12,11 @@ const CURVE = '#4cc3f2';
 const HANDLE = '#9fe0fa';
 const HOT = '#ffffff';
 
+/** The cursor on the plane facing the camera through `at`: handles move freely in 3D in the perspective view too,
+ *  not only across the ground as pane.planePoint does there. */
+const facingPoint = (p: Pane, x: number, y: number, at: THREE.Vector3) =>
+  p.ray(x, y).intersectPlane(new THREE.Plane().setFromNormalAndCoplanarPoint(p.viewDir(at), at), new THREE.Vector3()) ?? at.clone();
+
 /** Ready-made curves, in a piece's own terms: along, then sideways. */
 export const BEND_PRESETS: Record<string, { label: string; title: string; pts: BendShape['pts'] }> = {
   arc: { label: 'Arc', title: 'A smooth curve to one side, as a horn or a tail', pts: [[0, 0, 0], [0.4, 0, 0], [0.8, 0.1, 0], [0.92, 0.42, 0]] },
@@ -126,7 +131,7 @@ export class BendTool {
     const h = this.hit(p, x, y);
     if (!h || !this.setup) return false;
     const w = new THREE.Vector3(...toWorld(this.setup, this.setup.pieces[h.piece], this.shape.pts[h.idx]));
-    const at = p.planePoint(x, y, w);
+    const at = facingPoint(p, x, y, w);
     this.drag = { ...h, pane: p, anchor: w, grab: w.clone().sub(at), start: { ...this.shape, pts: this.shape.pts.map((q) => [...q]) as BendShape['pts'] }, alt: e.altKey };
     ed.begin('Bend');
     return true;
@@ -138,7 +143,7 @@ export class BendTool {
     if (d && this.setup) {
       if (p !== d.pane) return true;
       const piece = this.setup.pieces[d.piece];
-      const w = p.planePoint(x, y, d.anchor).add(d.grab);
+      const w = facingPoint(p, x, y, d.anchor).add(d.grab);
       const local = toLocal(this.setup, piece, [w.x, w.y, w.z]);
       const pts = d.start.pts.map((q) => [...q]) as BendShape['pts'];
       pts[d.idx] = local;

@@ -4,17 +4,18 @@ import * as THREE from 'three';
 import { ed } from '../core/editor';
 import { faceNormal } from '../core/geom';
 import * as ops from '../core/ops';
-import { seamTwins, uvAtPoint, uvToPixel, worldPerTexel } from '../core/paint';
+import { hexToRgba, rgbaToHex, uvAtPoint, uvToPixel, type Brush, type RGBA } from '../core/paint';
 import { autotileSlot, boxQuads, cellAt, cellCorners, cellsOnPlane, cubeBox, faceCell, faceInCell, fitTileToFace, NO_TRANSFORM, placeTileQuad, planeAxes, quadTileCounts, splitQuad, tileForCell, tileOfFace, tileUV, type TileGrid, type TilePlane } from '../core/tiles';
-import { mirrorFaces } from '../core/symmetry';
 import { makeGroup, type Model, type V3 } from '../core/types';
 import { app } from '../ui/app';
 import { status, toast } from '../ui/feedback';
-import { paint, strokeAlso, strokeBegin, strokeEnd, strokeFlush, strokeHasTip, strokeMove } from '../ui/paintEditor';
-import { texDoc, textureOfFace, type TexDoc } from '../ui/textureDoc';
+import { colorStore } from '../ui/colorPicker';
+import { brushFor, paint, pressed, selection, setPressure, strokeBegin, strokeEnd, strokeMove, toolLabel } from '../ui/paintEditor';
+import { texDoc, textureOfFace, workingTexture, type TexDoc } from '../ui/textureDoc';
 import { atlasGrid, atlasMaterial, atlasTexture, rememberTile, tiles, type TileMode } from '../ui/tileEditor';
 import type { Pane } from './pane';
 import * as pick from './picking';
+import { ModelStroke } from './projectPaint';
 import type { SceneGraph } from './scene';
 
 export interface SurfaceHost { sg: SceneGraph; invalidate(): void }
@@ -30,16 +31,18 @@ function tidyVerts(m: Model) {
 
 // ---------- painting on the model ----------
 export class TexPaintTool {
+  /** A line or rectangle under way: these run straight across one texture. */
   private doc: TexDoc | null = null;
-  private last: [number, number] | null = null;
+  /** A brush stroke under way, painted as the view sees it. */
+  private stroke: { pane: Pane; s: ModelStroke; color: RGBA; brush: Brush; scale: number; last: [number, number] } | null = null;
   private mouse: { x: number; y: number; pane: Pane } | null = null;
 
   constructor(private host: SurfaceHost) {}
 
-  get active() { return this.doc !== null; }
+  get active() { return this.doc !== null || this.stroke !== null; }
 
   /** The texture pixel under the mouse, and the texture it's on. */
-  private hitPixel(p: Pane, x: number, y: number): { doc: TexDoc; px: number; py: number; face: number; point: V3 } | null {
+  private hitPixel(p: Pane, x: number, y: number): { doc: TexDoc; px: number; py: number } | null {
     const hit = pick.pickFace(p, this.host.sg, x, y, false);
     if (!hit) return null;
     const t = textureOfFace(ed.model, hit.face);
@@ -49,99 +52,100 @@ export class TexPaintTool {
     const uv = uvAtPoint(ed.model, hit.face, v3(hit.point));
     if (!uv) return null;
     const [px, py] = uvToPixel(uv, d.w, d.h);
-    return { doc: d, px, py, face: hit.face, point: v3(hit.point) };
+    return { doc: d, px, py };
   }
 
-  /** The faces showing the texture being painted, worked out when a stroke starts. */
-  private sameTexture: number[] = [];
-
-  /**
-   * Carry the brush across UV seams: paint it as a ball on the model, so faces beside this one whose part of the
-   * texture lies elsewhere get their share of the dab too.
-   */
-  private paintTwins(h: { doc: TexDoc; face: number; point: V3 }) {
-    if (!strokeHasTip()) return;
-    const m = ed.model;
-    const k = worldPerTexel(m, h.face, h.doc.w, h.doc.h);
-    if (!k) return;
-    const radius = (paint.size / 2 + 0.5) * k;
-    for (const t of seamTwins(m, h.face, h.point, radius, this.sameTexture)) {
-      const [px, py] = uvToPixel(t.uv, h.doc.w, h.doc.h);
-      const kt = worldPerTexel(m, t.face, h.doc.w, h.doc.h) || k;
-      strokeAlso(t.face, px, py, Math.max(0, (t.radius / kt) * 2 - 1));
-    }
-  }
-
-  /** With symmetry: each face's twin across X, worked out when a stroke starts. */
-  private twinFace: Map<number, number> | null = null;
-
-  /** With Mirror X on, paint the same dab at the mirror point on the twin face, wherever its UVs put it. */
-  private paintMirror(h: { doc: TexDoc; px: number; py: number; face: number; point: V3 }) {
-    if (!this.twinFace || !strokeHasTip()) return;
-    const tf = this.twinFace.get(h.face);
-    if (tf === undefined || !this.sameTexture.includes(tf)) return;
-    const m = ed.model;
-    const q: V3 = [-h.point[0], h.point[1], h.point[2]];
-    const uv = uvAtPoint(m, tf, q);
-    if (!uv) return;
-    const [px, py] = uvToPixel(uv, h.doc.w, h.doc.h);
-    // On the centre line, or with overlapping UVs, the dab is already there.
-    if (Math.hypot(px - h.px, py - h.py) < 1) return;
-    const k = worldPerTexel(m, h.face, h.doc.w, h.doc.h), kt = worldPerTexel(m, tf, h.doc.w, h.doc.h) || k;
-    strokeAlso(-1, px, py, k && kt ? paint.size * (k / kt) : paint.size);
-    this.paintTwins({ doc: h.doc, face: tf, point: q });
-  }
-
-  /** How many screen pixels one texel covers at the mouse, measured by picking just beside it. */
+  /** How many screen pixels one texel covers at the mouse, measured by picking just beside it, across and down. */
   private texelScale = 4;
+  private measure(p: Pane, x: number, y: number) {
+    const a = this.hitPixel(p, x, y);
+    if (!a) return;
+    const scales: number[] = [];
+    for (const b of [this.hitPixel(p, x + 6, y), this.hitPixel(p, x, y + 6)]) {
+      if (!b || b.doc !== a.doc) continue;
+      const d = Math.hypot(b.px - a.px, b.py - a.py);
+      if (d > 1e-6 && d < a.doc.w / 2) scales.push(6 / d);
+    }
+    if (scales.length) this.texelScale = scales.reduce((s, v) => s + v, 0) / scales.length;
+  }
 
   down(p: Pane, x: number, y: number, e: PointerEvent) {
     const hit = pick.pickFace(p, this.host.sg, x, y, false);
     if (!hit) return;
     const t = textureOfFace(ed.model, hit.face);
     if (!t) { toast('This part has no texture to paint yet. Use New texture in the panel.', 'info'); return; }
-    // Lines and rectangles run straight in the texture, between where the drag starts and where it is now.
     const h = this.hitPixel(p, x, y);
     if (!h) { status('Loading the texture…'); return; }
-    if (strokeBegin(h.doc, h.px, h.py, e.shiftKey, e.altKey)) {
-      this.doc = h.doc; this.last = [h.px, h.py];
-      const m = ed.model;
-      this.sameTexture = [];
-      m.faces.forEach((_, fi) => { if (textureOfFace(m, fi)?.id === h.doc.texId) this.sameTexture.push(fi); });
-      this.twinFace = ed.mirrorX ? mirrorFaces(m) : null;
-      this.paintTwins(h);
-      this.paintMirror(h);
-      strokeFlush();
+    setPressure(e);
+    const tip = paint.tool === 'pencil' || paint.tool === 'brush' || paint.tool === 'eraser';
+    if (!tip || e.altKey) {
+      // Lines and rectangles run straight in the texture, between where the drag starts and where it is now.
+      if (strokeBegin(h.doc, h.px, h.py, e.shiftKey, e.altKey)) this.doc = h.doc;
+      return;
+    }
+    this.measure(p, x, y);
+    const work = workingTexture();
+    const clip = work && selection.rect ? { texId: work.id, rect: selection.rect } : null;
+    const s = new ModelStroke(p, clip);
+    // The brush keeps the size it has where the stroke starts, so it doesn't swell or shrink crossing other faces.
+    this.stroke = { pane: p, s, color: hexToRgba(e.shiftKey ? paint.secondary : paint.primary), brush: brushFor(paint.tool), scale: this.texelScale, last: [x, y] };
+    this.dabAt(x, y);
+    s.flush();
+  }
+
+  /** One dab under (x, y), at the pen's pressure. */
+  private dabAt(x: number, y: number) {
+    const st = this.stroke!;
+    const b = pressed(st.brush);
+    const r = (b.size / 2) * st.scale;
+    st.s.dab(x, y, r, st.color, b, paint.mirror);
+    // A pixel brush narrower than a texel on screen could fall between texel centres: paint the one under it.
+    if (b.shape !== 'soft' && r < st.scale) {
+      const hit = pick.pickFace(st.pane, this.host.sg, x, y, false);
+      const t = hit && textureOfFace(ed.model, hit.face);
+      const uv = hit && uvAtPoint(ed.model, hit.face, v3(hit.point));
+      const sh = t ? st.s.sheets.get(t.id) : undefined;
+      if (t && uv && sh) {
+        const [px, py] = uvToPixel(uv, sh.doc.w, sh.doc.h);
+        st.s.texel(t.id, Math.min(sh.doc.w - 1, Math.floor(px)), Math.min(sh.doc.h - 1, Math.floor(py)), st.color, b, paint.mirror);
+      }
     }
   }
 
-  move(p: Pane, x: number, y: number) {
+  move(p: Pane, x: number, y: number, e?: PointerEvent) {
     this.mouse = { x, y, pane: p };
+    const st = this.stroke;
+    if (st) {
+      if (p !== st.pane) return;
+      if (e) setPressure(e);
+      // Dabs along the mouse's path on screen, so the stroke follows the surface however the texture is laid out.
+      const r = (pressed(st.brush).size / 2) * st.scale;
+      const step = Math.max(1, r * (st.brush.shape === 'soft' ? 0.25 : 0.5));
+      const [lx, ly] = st.last;
+      const n = Math.min(256, Math.ceil(Math.hypot(x - lx, y - ly) / step));
+      for (let i = 1; i <= n; i++) this.dabAt(lx + ((x - lx) * i) / n, ly + ((y - ly) * i) / n);
+      if (n) { st.last = [x, y]; st.s.flush(); }
+      return;
+    }
     if (!this.doc) {
-      // Size the brush outline: compare the texels under the mouse and a few pixels to the side.
-      const a = this.hitPixel(p, x, y), b = this.hitPixel(p, x + 6, y);
-      if (a && b && a.doc === b.doc) {
-        const d = Math.hypot(b.px - a.px, b.py - a.py);
-        if (d > 1e-6 && d < a.doc.w / 2) this.texelScale = 6 / d;
-      }
+      this.measure(p, x, y);
       this.host.invalidate();
       return;
     }
     const h = this.hitPixel(p, x, y);
     if (!h || h.doc !== this.doc) return;
-    // A big jump across the texture means the stroke crossed a UV seam: carry on from the new spot, not a line across.
-    // Lines and rectangles always follow the mouse from where they started.
-    const shape = paint.tool === 'line' || paint.tool === 'rect';
-    const far = !shape && (!this.last || Math.hypot(h.px - this.last[0], h.py - this.last[1]) > Math.max(12, paint.size * 4));
-    if (!shape) { this.paintTwins(h); this.paintMirror(h); }
-    strokeMove(h.px, h.py, far);
-    this.last = [h.px, h.py];
+    strokeMove(h.px, h.py);
   }
 
   up() {
+    const st = this.stroke;
+    if (st) {
+      this.stroke = null;
+      if (st.s.end(toolLabel(paint.tool))) colorStore.remember(rgbaToHex(st.color));
+      return;
+    }
     if (!this.doc) return;
     this.doc = null;
-    this.last = null;
     strokeEnd();
   }
 
@@ -149,7 +153,7 @@ export class TexPaintTool {
     const m = this.mouse;
     if (!m || m.pane !== p) return;
     // The brush at its real size on the surface under the mouse.
-    const r = paint.tool === 'fill' || paint.tool === 'picker' ? 4 : Math.max(3, (paint.size / 2) * this.texelScale);
+    const r = paint.tool === 'fill' || paint.tool === 'picker' ? 4 : Math.max(3, (paint.size / 2) * (this.stroke?.scale ?? this.texelScale));
     g.strokeStyle = paint.tool === 'eraser' ? '#ffffff' : paint.primary;
     g.lineWidth = 2;
     g.beginPath(); g.arc(m.x, m.y, r, 0, Math.PI * 2); g.stroke();
@@ -485,9 +489,9 @@ export class TileTool {
     g.beginPath();
     pts.forEach((q, i) => { const s = p.project(q[0], q[1], q[2]); if (i) g.lineTo(s.x, s.y); else g.moveTo(s.x, s.y); });
     g.closePath();
-    g.fillStyle = tiles.mode === 'erase' ? 'rgba(255,90,90,0.22)' : 'rgba(242,178,76,0.22)';
+    g.fillStyle = tiles.mode === 'erase' ? 'rgba(255,90,90,0.22)' : 'rgba(63,224,90,0.22)';
     g.fill();
-    g.strokeStyle = tiles.mode === 'erase' ? '#ff5a5a' : '#f2b24c';
+    g.strokeStyle = tiles.mode === 'erase' ? '#ff5a5a' : '#3fe05a';
     g.lineWidth = 2;
     g.stroke();
   }

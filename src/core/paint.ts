@@ -1,7 +1,7 @@
 // Painting on texture pixels: hard pixel brushes for pixel art, soft brushes, lines, rectangles, flood fill and
 // colour picking. Works on plain RGBA pixel buffers, so it runs anywhere and is easy to test; the editor copies
 // them to and from canvases.
-import { cross, dot, faceArea, faceNormal, norm, sub, triangulateFace } from './geom';
+import { triangulateFace } from './geom';
 import type { Model, V2, V3 } from './types';
 
 export interface Pixels { width: number; height: number; data: Uint8ClampedArray }
@@ -70,14 +70,22 @@ export function brushFootprint(cx: number, cy: number, b: Brush): { x: number; y
     return out;
   }
   const r = size / 2;
-  const inner = r * Math.max(0, Math.min(1, b.hardness));
   for (let y = Math.floor(cy - r); y <= Math.ceil(cy + r); y++) for (let x = Math.floor(cx - r); x <= Math.ceil(cx + r); x++) {
-    const d = Math.hypot(x + 0.5 - cx, y + 0.5 - cy);
-    if (d > r) continue;
-    const w = d <= inner ? 1 : 1 - (d - inner) / Math.max(1e-6, r - inner);
-    out.push({ x, y, w: w * w * (3 - 2 * w) });
+    const w = brushWeight(x + 0.5 - cx, y + 0.5 - cy, r, b);
+    if (w > 0) out.push({ x, y, w });
   }
   return out;
+}
+
+/** How strongly a brush of radius `r` covers a spot (dx, dy) from its centre: soft brushes feather off, others are on or off. */
+export function brushWeight(dx: number, dy: number, r: number, b: Brush): number {
+  if (b.shape === 'square') return Math.max(Math.abs(dx), Math.abs(dy)) <= r ? 1 : 0;
+  const d = Math.hypot(dx, dy);
+  if (d > r) return 0;
+  if (b.shape === 'round') return 1;
+  const inner = r * Math.max(0, Math.min(1, b.hardness));
+  const w = d <= inner ? 1 : 1 - (d - inner) / Math.max(1e-6, r - inner);
+  return w * w * (3 - 2 * w);
 }
 
 /**
@@ -85,17 +93,19 @@ export function brushFootprint(cx: number, cy: number, b: Brush): { x: number; y
  * build up past its opacity, as in most paint programs.
  */
 export function dab(img: Pixels, cx: number, cy: number, c: RGBA, b: Brush, covered: Map<number, number>) {
-  for (const { x, y, w } of brushFootprint(cx, cy, b)) {
-    if (x < 0 || y < 0 || x >= img.width || y >= img.height) continue;
-    const k = y * img.width + x;
-    const want = w * b.opacity;
-    const had = covered.get(k) ?? 0;
-    if (want <= had + 1e-6) continue;
-    covered.set(k, want);
-    // Lay down only the extra coverage, so the result matches one pass at `want`.
-    const extra = had >= 1 ? 0 : (want - had) / (1 - had);
-    blendPixel(img, x, y, c, extra, b.erase);
-  }
+  for (const { x, y, w } of brushFootprint(cx, cy, b)) coverPixel(img, x, y, c, w * b.opacity, b.erase, covered);
+}
+
+/** Bring one pixel up to `want` coverage for this stroke, never past it. */
+export function coverPixel(img: Pixels, x: number, y: number, c: RGBA, want: number, erase: boolean, covered: Map<number, number>) {
+  if (x < 0 || y < 0 || x >= img.width || y >= img.height) return;
+  const k = y * img.width + x;
+  const had = covered.get(k) ?? 0;
+  if (want <= had + 1e-6) return;
+  covered.set(k, want);
+  // Lay down only the extra coverage, so the result matches one pass at `want`.
+  const extra = had >= 1 ? 0 : (want - had) / (1 - had);
+  blendPixel(img, x, y, c, extra, erase);
 }
 
 /** Every pixel on the line from a to b, without gaps or doubled corners. */
@@ -282,29 +292,46 @@ export function uvAtPoint(m: Model, fi: number, p: [number, number, number]): V2
 export function remapPixels(src: Pixels, dst: Pixels, tris: { from: [V2, V2, V2]; to: [V2, V2, V2] }[]) {
   const W = dst.width, H = dst.height;
   for (const { from, to } of tris) {
-    const P = to.map((u) => [u[0] * W, u[1] * H]);
-    const area = (P[1][0] - P[0][0]) * (P[2][1] - P[0][1]) - (P[2][0] - P[0][0]) * (P[1][1] - P[0][1]);
-    if (Math.abs(area) < 1e-9) continue;
-    const x0 = Math.max(0, Math.floor(Math.min(P[0][0], P[1][0], P[2][0]) - 1)), x1 = Math.min(W - 1, Math.ceil(Math.max(P[0][0], P[1][0], P[2][0]) + 1));
-    const y0 = Math.max(0, Math.floor(Math.min(P[0][1], P[1][1], P[2][1]) - 1)), y1 = Math.min(H - 1, Math.ceil(Math.max(P[0][1], P[1][1], P[2][1]) + 1));
-    // Each edge's length, to measure how far outside it a pixel lies in pixels.
-    const len = [0, 1, 2].map((i) => Math.hypot(P[(i + 2) % 3][0] - P[(i + 1) % 3][0], P[(i + 2) % 3][1] - P[(i + 1) % 3][1]) || 1);
-    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
-      const px = x + 0.5, py = y + 0.5;
-      const w = [0, 1, 2].map((i) => {
-        const a = P[(i + 1) % 3], b = P[(i + 2) % 3];
-        return ((b[0] - a[0]) * (py - a[1]) - (b[1] - a[1]) * (px - a[0])) / area;
-      });
-      // w[i] × twice the area ÷ the opposite edge is the distance inside that edge, in pixels.
-      if (w.some((wi, i) => (wi * Math.abs(area)) / len[i] < -0.5)) continue;
-      const c = w.map((wi) => Math.max(0, wi));
-      const s = c[0] + c[1] + c[2] || 1;
-      const u = (c[0] * from[0][0] + c[1] * from[1][0] + c[2] * from[2][0]) / s, v = (c[0] * from[0][1] + c[1] * from[1][1] + c[2] * from[2][1]) / s;
+    const P = to.map((u) => [u[0] * W, u[1] * H]) as Tri2;
+    forTexelsInTri(P, 0, 0, W - 1, H - 1, (x, y, c) => {
+      const u = c[0] * from[0][0] + c[1] * from[1][0] + c[2] * from[2][0], v = c[0] * from[0][1] + c[1] * from[1][1] + c[2] * from[2][1];
       const [sx, sy] = uvToPixel([u, v], src.width, src.height);
       const si = (Math.min(src.height - 1, Math.floor(sy)) * src.width + Math.min(src.width - 1, Math.floor(sx))) * 4;
       const di = (y * W + x) * 4;
       dst.data[di] = src.data[si]; dst.data[di + 1] = src.data[si + 1]; dst.data[di + 2] = src.data[si + 2]; dst.data[di + 3] = src.data[si + 3];
+    });
+  }
+}
+
+type Tri2 = [[number, number], [number, number], [number, number]];
+
+/**
+ * Every pixel a triangle (in pixel coordinates) covers, within the range given, with where it sits in the triangle.
+ * Pixels within half a pixel of an edge count as covered, so no gaps show along seams.
+ */
+export function forTexelsInTri(P: Tri2, rx0: number, ry0: number, rx1: number, ry1: number, fn: (x: number, y: number, c: [number, number, number]) => void) {
+  const area = (P[1][0] - P[0][0]) * (P[2][1] - P[0][1]) - (P[2][0] - P[0][0]) * (P[1][1] - P[0][1]);
+  if (Math.abs(area) < 1e-9) return;
+  // Only the texels the triangle's box spans: the edge allowance must not reach past it, or wrap round the texture.
+  const fx = Math.floor(Math.min(P[0][0], P[1][0], P[2][0])), fy = Math.floor(Math.min(P[0][1], P[1][1], P[2][1]));
+  const x0 = Math.max(rx0, fx), x1 = Math.min(rx1, Math.max(fx, Math.ceil(Math.max(P[0][0], P[1][0], P[2][0])) - 1));
+  const y0 = Math.max(ry0, fy), y1 = Math.min(ry1, Math.max(fy, Math.ceil(Math.max(P[0][1], P[1][1], P[2][1])) - 1));
+  // Each edge's length, to measure how far outside it a pixel lies in pixels.
+  const len = [0, 1, 2].map((i) => Math.hypot(P[(i + 2) % 3][0] - P[(i + 1) % 3][0], P[(i + 2) % 3][1] - P[(i + 1) % 3][1]) || 1);
+  const w: [number, number, number] = [0, 0, 0];
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+    const px = x + 0.5, py = y + 0.5;
+    let out = false;
+    for (let i = 0; i < 3 && !out; i++) {
+      const a = P[(i + 1) % 3], b = P[(i + 2) % 3];
+      w[i] = ((b[0] - a[0]) * (py - a[1]) - (b[1] - a[1]) * (px - a[0])) / area;
+      // w × twice the area ÷ the opposite edge is the distance inside that edge, in pixels.
+      out = (w[i] * Math.abs(area)) / len[i] < -0.5;
     }
+    if (out) continue;
+    const c0 = Math.max(0, w[0]), c1 = Math.max(0, w[1]), c2 = Math.max(0, w[2]);
+    const s = c0 + c1 + c2 || 1;
+    fn(x, y, [c0 / s, c1 / s, c2 / s]);
   }
 }
 
@@ -412,78 +439,97 @@ export function reducePalette(img: Pixels, n: number): RGBA[] {
   });
 }
 
-// ---------- painting across UV seams ----------
-/** How far one texel reaches across a face on the model, in world units, from its size in 3D and on the texture. */
-export function worldPerTexel(m: Model, fi: number, w: number, h: number): number {
-  const f = m.faces[fi];
-  const world = faceArea(m, f);
-  let uv = 0;
-  const n = f.uv.length;
-  for (let i = 0; i < n; i++) { const a = f.uv[i], b = f.uv[(i + 1) % n]; uv += a[0] * b[1] - b[0] * a[1]; }
-  const px = Math.abs(uv / 2) * w * h;
-  return px > 1e-12 ? Math.sqrt(world / px) : 0;
-}
-
-/** One spot a brush ball reaches on another face: where on that face's texture, and how wide, in world units. */
-export interface SeamTwin { face: number; uv: V2; radius: number }
+// ---------- painting on the model as the view sees it ----------
+/** A triangle of the model to paint: its corners on the texture (0..1) and on the model. */
+export interface PaintTri { uv: [V2, V2, V2]; p: [V3, V3, V3] }
 
 /**
- * Where a ball of paint at `p`, on face `fi`, also lands on the other `faces`: so a dab near a UV seam paints both
- * sides of it. Each face the ball reaches gets the point straight across on its plane, and the radius of the circle the
- * ball makes there. Faces turned away (the far side of a thin wall) are left alone.
+ * Where a model point lands on screen: x and y in pixels, w the perspective divide (1 when flat), d its distance in
+ * front of the camera. Null behind the camera.
  */
-export function seamTwins(m: Model, fi: number, p: V3, radius: number, faces: Iterable<number>): SeamTwin[] {
-  const out: SeamTwin[] = [];
-  const n0 = faceNormal(m, m.faces[fi]);
-  for (const g of faces) {
-    if (g === fi) continue;
-    const f = m.faces[g];
-    if (!f) continue;
-    // Quick reject: the ball misses the face's bounds.
-    let miss = false;
-    for (let k = 0; k < 3 && !miss; k++) {
-      let lo = Infinity, hi = -Infinity;
-      for (const v of f.v) { const c = m.verts[v].p[k]; lo = Math.min(lo, c); hi = Math.max(hi, c); }
-      miss = p[k] < lo - radius || p[k] > hi + radius;
-    }
-    if (miss) continue;
-    const ng = faceNormal(m, f);
-    if (ng[0] * n0[0] + ng[1] * n0[1] + ng[2] * n0[2] < -0.3) continue;
-    const tris = triangulateFace(m, f);
-    let best: { d: number; plane: number; uv: V2 } | null = null;
-    for (let t = 0; t < tris.length; t += 3) {
-      const ia = tris[t], ib = tris[t + 1], ic = tris[t + 2];
-      const a = m.verts[f.v[ia]].p, b = m.verts[f.v[ib]].p, c = m.verts[f.v[ic]].p;
-      const e0 = sub(b, a), e1 = sub(c, a);
-      const nt = norm(cross(e0, e1));
-      if (!nt[0] && !nt[1] && !nt[2]) continue;
-      const plane = dot(sub(p, a), nt);
-      const q: V3 = [p[0] - plane * nt[0], p[1] - plane * nt[1], p[2] - plane * nt[2]];
-      // Where q sits in the triangle, unclamped, so a point just past an edge still maps just past it on the texture.
-      const v2 = sub(q, a);
-      const d00 = dot(e0, e0), d01 = dot(e0, e1), d11 = dot(e1, e1), d20 = dot(v2, e0), d21 = dot(v2, e1);
-      const den = d00 * d11 - d01 * d01;
-      if (Math.abs(den) < 1e-14) continue;
-      const v = (d11 * d20 - d01 * d21) / den, w = (d00 * d21 - d01 * d20) / den, u = 1 - v - w;
-      // How far q is outside the triangle, along its edges.
-      let edge = 0;
-      if (u < 0 || v < 0 || w < 0) {
-        edge = Math.min(segDist(q, a, b), segDist(q, b, c), segDist(q, c, a));
-      }
-      const d = Math.hypot(plane, edge);
-      if (best && d >= best.d) continue;
-      const A = f.uv[ia], B = f.uv[ib], C = f.uv[ic];
-      best = { d, plane: Math.abs(plane), uv: [u * A[0] + v * B[0] + w * C[0], u * A[1] + v * B[1] + w * C[1]] };
-    }
-    if (!best || best.d >= radius) continue;
-    out.push({ face: g, uv: best.uv, radius: Math.sqrt(radius * radius - best.plane * best.plane) });
+export type Projector = (p: V3) => { x: number; y: number; w: number; d: number } | null;
+
+/**
+ * Paint a brush seen on screen onto one triangle's texture: each texel whose spot on the model lands within the brush
+ * around (cx, cy), radius `r` pixels, gets `fn(x, y, want)`. So the brush keeps its shape however the texture is
+ * stretched, and never reaches texels of parts that aren't under it. `visible` hides spots behind other surfaces.
+ */
+export function projectTri(t: PaintTri, w: number, h: number, project: Projector, visible: (s: { x: number; y: number; d: number }) => boolean,
+  cx: number, cy: number, r: number, b: Brush, fn: (x: number, y: number, want: number) => void) {
+  const S = t.p.map(project);
+  const reach = r + 1;
+  const all = S.every((s) => s !== null);
+  if (all) {
+    const xs = S.map((s) => s!.x), ys = S.map((s) => s!.y);
+    if (Math.max(...xs) < cx - reach || Math.min(...xs) > cx + reach || Math.max(...ys) < cy - reach || Math.min(...ys) > cy + reach) return;
   }
-  return out;
+  // Shift the triangle near the texture's first repeat, and wrap the texels back.
+  const ou = Math.floor(Math.min(t.uv[0][0], t.uv[1][0], t.uv[2][0])), ov = Math.floor(Math.min(t.uv[0][1], t.uv[1][1], t.uv[2][1]));
+  const P = t.uv.map((u) => [(u[0] - ou) * w, (u[1] - ov) * h]) as Tri2;
+  let rx0 = -Infinity, ry0 = -Infinity, rx1 = Infinity, ry1 = Infinity;
+  if (all) {
+    // Only the texels under the brush's box on screen: map its corners back onto the triangle, correcting for perspective.
+    const [a, bb, c] = S as { x: number; y: number; w: number }[];
+    const den = (bb.y - c.y) * (a.x - c.x) + (c.x - bb.x) * (a.y - c.y);
+    if (Math.abs(den) > 1e-9) {
+      let ok = true;
+      const us: number[] = [], vs: number[] = [];
+      for (const [qx, qy] of [[cx - reach, cy - reach], [cx + reach, cy - reach], [cx - reach, cy + reach], [cx + reach, cy + reach]]) {
+        const l0 = ((bb.y - c.y) * (qx - c.x) + (c.x - bb.x) * (qy - c.y)) / den;
+        const l1 = ((c.y - a.y) * (qx - c.x) + (a.x - c.x) * (qy - c.y)) / den;
+        const m0 = l0 / a.w, m1 = l1 / bb.w, m2 = (1 - l0 - l1) / c.w, sum = m0 + m1 + m2;
+        if (sum <= 1e-12) { ok = false; break; }
+        us.push((m0 * P[0][0] + m1 * P[1][0] + m2 * P[2][0]) / sum);
+        vs.push((m0 * P[0][1] + m1 * P[1][1] + m2 * P[2][1]) / sum);
+      }
+      if (ok) { rx0 = Math.floor(Math.min(...us)) - 2; rx1 = Math.ceil(Math.max(...us)) + 2; ry0 = Math.floor(Math.min(...vs)) - 2; ry1 = Math.ceil(Math.max(...vs)) + 2; }
+    }
+  }
+  const q: V3 = [0, 0, 0];
+  forTexelsInTri(P, rx0, ry0, rx1, ry1, (x, y, k) => {
+    for (let i = 0; i < 3; i++) q[i] = k[0] * t.p[0][i] + k[1] * t.p[1][i] + k[2] * t.p[2][i];
+    const s = project(q);
+    if (!s) return;
+    const want = brushWeight(s.x - cx, s.y - cy, r, b) * b.opacity;
+    if (want <= 0 || !visible(s)) return;
+    fn(((x % w) + w) % w, ((y % h) + h) % h, want);
+  });
 }
 
-function segDist(p: V3, a: V3, b: V3): number {
-  const ab = sub(b, a);
-  const l = dot(ab, ab);
-  const t = l > 1e-18 ? Math.max(0, Math.min(1, dot(sub(p, a), ab) / l)) : 0;
-  return Math.hypot(p[0] - a[0] - ab[0] * t, p[1] - a[1] - ab[1] * t, p[2] - a[2] - ab[2] * t);
+/** Which texels some triangle covers (corners 0..1), within half a texel of its edges, as y × width + x. */
+export function uvCoverage(w: number, h: number, tris: [V2, V2, V2][]): Uint8Array {
+  const used = new Uint8Array(w * h);
+  for (const uv of tris) {
+    const ou = Math.floor(Math.min(uv[0][0], uv[1][0], uv[2][0])), ov = Math.floor(Math.min(uv[0][1], uv[1][1], uv[2][1]));
+    const P = uv.map((u) => [(u[0] - ou) * w, (u[1] - ov) * h]) as Tri2;
+    forTexelsInTri(P, -Infinity, -Infinity, Infinity, Infinity, (x, y) => { used[(((y % h) + h) % h) * w + (((x % w) + w) % w)] = 1; });
+  }
+  return used;
+}
+
+/**
+ * Spread painted pixels `pad` pixels out into the texture's unused space, so a seam doesn't show the old colour once
+ * the texture is drawn smaller. `used` marks the pixels faces use; only pixels outside it change. `from` are the
+ * painted pixels, as y × width + x.
+ */
+export function padPainted(img: Pixels, used: Uint8Array, from: Iterable<number>, pad: number) {
+  const W = img.width, H = img.height, d = img.data;
+  const done = new Uint8Array(W * H);
+  let ring = [...from].filter((k) => used[k]);
+  for (let step = 0; step < pad && ring.length; step++) {
+    const next: number[] = [];
+    for (const k of ring) {
+      const x = k % W, y = (k - x) / W;
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        const nx = x + dx, ny = y + dy;
+        if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
+        const n = ny * W + nx;
+        if (used[n] || done[n]) continue;
+        done[n] = 1;
+        d.copyWithin(n * 4, k * 4, k * 4 + 4);
+        next.push(n);
+      }
+    }
+    ring = next;
+  }
 }
